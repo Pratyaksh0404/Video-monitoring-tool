@@ -19,6 +19,9 @@ def main():
 
         objects = tracker.update(boxes)
 
+        for (x1, y1, x2, y2, conf) in detections:
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
         for obj_id, (cx, cy) in objects.items():
             cv2.circle(frame, (cx, cy), 5, (0, 0, 255), -1)
             cv2.putText(
