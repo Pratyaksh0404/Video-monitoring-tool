@@ -3,12 +3,13 @@ import cv2
 from video.stream_reader import VideoStreamReader
 from detection.person_detector import PersonDetector
 from analytics.presence import PresenceMonitor
+from analytics.inactivity import InactivityMonitor
 
-# ROI
 POST_AREA = (100, 100, 400, 400)
 
 MIN_PERSON_HEIGHT = 120
 MIN_PERSON_WIDTH = 40
+
 
 def is_inside_roi(box, roi):
     x1, y1, x2, y2 = box
@@ -21,8 +22,7 @@ def is_inside_roi(box, roi):
 
 
 def main():
-
-    stream = VideoStreamReader(source=0)  # Webcam
+    stream = VideoStreamReader(source=0)
     detector = PersonDetector(conf_threshold=0.5)
 
     presence_monitor = PresenceMonitor(
@@ -31,10 +31,15 @@ def main():
         min_motion=5
     )
 
+    inactivity_monitor = InactivityMonitor(
+        inactivity_threshold=30,
+        position_threshold=40,
+        window_time=5
+    )
+
     while True:
         frame = stream.read_frame()
         if frame is None:
-            print("Failed to read frame. Exiting...")
             break
 
         detections = detector.detect(frame)
@@ -53,37 +58,55 @@ def main():
             if is_inside_roi((x1, y1, x2, y2), POST_AREA):
                 cx = int((x1 + x2) / 2)
                 cy = int((y1 + y2) / 2)
-                area = (x2 - x1) * (y2 - y1)
-                height = y2 - y1
-                valid_centroids.append((cx, cy, area, height))
+                valid_centroids.append((cx, cy))
 
-        status = presence_monitor.update(valid_centroids)
+        post_status = presence_monitor.update(valid_centroids)
 
-        # Draw ROI
+        if post_status == "PRESENT":
+            activity_status = inactivity_monitor.update(valid_centroids)
+        else:
+            activity_status = "NO_PERSON"
+
         rx1, ry1, rx2, ry2 = POST_AREA
         cv2.rectangle(frame, (rx1, ry1), (rx2, ry2), (255, 0, 0), 2)
 
-        if status == "PRESENT":
-            color = (0, 255, 0)
-        elif status == "TEMPORARILY_EMPTY":
-            color = (0, 255, 255)
-        else:  # ABSENT
-            color = (0, 0, 255)
+        if post_status == "PRESENT":
+            post_color = (0, 255, 0)
+        elif post_status == "TEMPORARILY_EMPTY":
+            post_color = (0, 255, 255)
+        else:
+            post_color = (0, 0, 255)
+
+        if activity_status == "ACTIVE":
+            activity_color = (0, 255, 0)
+        elif activity_status == "INACTIVE":
+            activity_color = (0, 0, 255)
+        else:
+            activity_color = (255, 255, 255)
 
         cv2.putText(
             frame,
-            f"Post Status: {status}",
+            f"Post Status: {post_status}",
             (20, 40),
             cv2.FONT_HERSHEY_SIMPLEX,
             1,
-            color,
+            post_color,
             2
         )
 
-        cv2.imshow("Presence Monitoring", frame)
+        cv2.putText(
+            frame,
+            f"Activity Status: {activity_status}",
+            (20, 80),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1,
+            activity_color,
+            2
+        )
+
+        cv2.imshow("Guard Monitoring", frame)
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
-            print("Exit requested by user.")
             break
 
     stream.release()
