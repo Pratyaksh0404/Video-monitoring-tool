@@ -4,6 +4,9 @@ from video.stream_reader import VideoStreamReader
 from detection.person_detector import PersonDetector
 from analytics.presence import PresenceMonitor
 from analytics.inactivity import InactivityMonitor
+from face.face_detector import FaceDetector
+from face.face_encoder import FaceEncoder
+from face.face_recognizer import FaceRecognizer
 
 POST_AREA = (100, 100, 400, 400)
 
@@ -37,6 +40,10 @@ def main():
         window_time=5
     )
 
+    face_detector = FaceDetector()
+    face_encoder = FaceEncoder()
+    face_recognizer = FaceRecognizer()
+
     while True:
         frame = stream.read_frame()
         if frame is None:
@@ -45,6 +52,7 @@ def main():
         detections = detector.detect(frame)
 
         valid_centroids = []
+        person_boxes = []
 
         for (x1, y1, x2, y2, conf) in detections:
             width = x2 - x1
@@ -53,6 +61,7 @@ def main():
             if height < MIN_PERSON_HEIGHT or width < MIN_PERSON_WIDTH:
                 continue
 
+            person_boxes.append((x1, y1, x2, y2))
             cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
             if is_inside_roi((x1, y1, x2, y2), POST_AREA):
@@ -66,6 +75,29 @@ def main():
             activity_status = inactivity_monitor.update(valid_centroids)
         else:
             activity_status = "NO_PERSON"
+
+        face_boxes = face_detector.detect(frame, person_boxes)
+        face_encodings = face_encoder.encode(frame, face_boxes)
+        identities = face_recognizer.recognize(face_encodings)
+
+        for i, (fx1, fy1, fx2, fy2, score) in enumerate(face_boxes):
+            label = identities[i] if i < len(identities) else "UNKNOWN"
+
+            if label == "UNKNOWN":
+                color = (0, 0, 255)
+            else:
+                color = (255, 0, 0)
+
+            cv2.rectangle(frame, (fx1, fy1), (fx2, fy2), color, 2)
+            cv2.putText(
+                frame,
+                label,
+                (fx1, fy1 - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                color,
+                2
+            )
 
         rx1, ry1, rx2, ry2 = POST_AREA
         cv2.rectangle(frame, (rx1, ry1), (rx2, ry2), (255, 0, 0), 2)
