@@ -16,3 +16,5 @@ data/
 # OS files
 .DS_Store
 Thumbs.db
+.idea/workspace.xml
+.idea/
