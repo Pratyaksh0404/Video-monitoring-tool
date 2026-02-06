@@ -4,6 +4,7 @@ from video.stream_reader import VideoStreamReader
 from detection.person_detector import PersonDetector
 from analytics.presence import PresenceMonitor
 from analytics.inactivity import InactivityMonitor
+from analytics.sleeping import SleepingMonitor
 from face.face_detector import FaceDetector
 from face.face_encoder import FaceEncoder
 from face.face_recognizer import FaceRecognizer
@@ -38,6 +39,13 @@ def main():
         inactivity_threshold=30,
         position_threshold=40,
         window_time=5
+    )
+
+    sleeping_monitor = SleepingMonitor(
+        sleep_threshold=60,
+        min_face_missing_time=15,
+        min_height_ratio=0.75,
+        min_centroid_drop=0.15
     )
 
     face_detector = FaceDetector()
@@ -80,19 +88,46 @@ def main():
         face_encodings = face_encoder.encode(frame, face_boxes)
         identities = face_recognizer.recognize(face_encodings)
 
-        for i, (fx1, fy1, fx2, fy2, score) in enumerate(face_boxes):
-            label = identities[i] if i < len(identities) else "UNKNOWN"
+        face_map = {}
+        for i, box in enumerate(face_boxes):
+            face_map[i] = box
 
-            if label == "UNKNOWN":
+        violation_reason = "NONE"
+
+        for idx, person_box in enumerate(person_boxes):
+            face_box = None
+            guard_id = "UNKNOWN"
+
+            if idx < len(face_boxes):
+                face_box = face_boxes[idx]
+                guard_id = identities[idx] if idx < len(identities) else "UNKNOWN"
+
+            inactive = activity_status == "INACTIVE"
+
+            is_sleeping = sleeping_monitor.update(
+                guard_id,
+                inactive,
+                face_box,
+                person_box
+            )
+
+            if is_sleeping:
+                violation_reason = "SUSPECTED_SLEEPING"
                 color = (0, 0, 255)
+                label = f"{guard_id} SLEEPING"
             else:
-                color = (255, 0, 0)
+                if guard_id == "UNKNOWN":
+                    color = (0, 0, 255)
+                else:
+                    color = (255, 0, 0)
+                label = guard_id
 
-            cv2.rectangle(frame, (fx1, fy1), (fx2, fy2), color, 2)
+            x1, y1, x2, y2 = person_box
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
             cv2.putText(
                 frame,
                 label,
-                (fx1, fy1 - 10),
+                (x1, y1 - 10),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.7,
                 color,
@@ -135,6 +170,17 @@ def main():
             activity_color,
             2
         )
+
+        if violation_reason != "NONE":
+            cv2.putText(
+                frame,
+                f"Violation: {violation_reason}",
+                (20, 120),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1,
+                (0, 0, 255),
+                2
+            )
 
         cv2.imshow("Guard Monitoring", frame)
 
