@@ -1,3 +1,6 @@
+import sys
+print(sys.executable)
+
 import cv2
 
 from video.stream_reader import VideoStreamReader
@@ -47,7 +50,7 @@ def iou(boxA, boxB):
 def main():
     stream = VideoStreamReader(source=0)
     detector = PersonDetector(conf_threshold=0.5)
-    tracker = CentroidTracker(max_disappeared=30, max_distance=60)
+    tracker = CentroidTracker(max_disappeared=60, max_distance=100)
 
     presence_monitor = PresenceMonitor(
         absence_threshold=5,
@@ -61,19 +64,17 @@ def main():
         window_time=5
     )
 
-    # 🔥 NEW ML BEHAVIOR SYSTEM
+    # NEW ML BEHAVIOR SYSTEM
     behavior_classifier = BehaviorClassifier(device="cpu")
     behavior_engine = BehaviorEngine()
 
     face_detector = FaceDetector()
     face_encoder = FaceEncoder()
     face_recognizer = FaceRecognizer()
-
     while True:
         frame = stream.read_frame()
         if frame is None:
             break
-
         detections = detector.detect(frame)
 
         person_boxes = []
@@ -113,28 +114,24 @@ def main():
                     best_iou = overlap
                     guard_id = identities[i] if i < len(identities) else "UNKNOWN"
 
-            # 🔥 BEHAVIOR PREDICTION
+            # BEHAVIOR PREDICTION
             label, confidence = behavior_classifier.predict(frame, person_box)
-            behavior_state = behavior_engine.update(track_id, label, confidence)
+            final_state = behavior_engine.update(track_id, label)
 
             x1, y1, x2, y2 = person_box
 
             color = (0, 255, 0)
 
-            if "CONFIRMED_SLEEPING" in behavior_state:
+            if "CONFIRMED" in final_state:
                 color = (0, 0, 255)
-            elif "CONFIRMED_PHONE_USE" in behavior_state:
+            elif "POSSIBLE" in final_state:
                 color = (0, 165, 255)
-            elif "CONFIRMED_IDLE" in behavior_state:
-                color = (255, 0, 0)
-            elif "POSSIBLE" in behavior_state:
-                color = (0, 255, 255)
 
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
 
             cv2.putText(
                 frame,
-                f"{guard_id} | {behavior_state}",
+                f"{guard_id} | {final_state}",
                 (x1, y1 - 10),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,

@@ -1,57 +1,62 @@
 import torch
-import torch.nn as nn
-import torchvision.models as models
-import torchvision.transforms as transforms
+import open_clip
 from PIL import Image
 import cv2
-import numpy as np
-
 
 class BehaviorClassifier:
     def __init__(self, device="cpu"):
         self.device = device
 
-        # Load MobileNetV2
-        self.model = models.mobilenet_v2(weights=models.MobileNet_V2_Weights.DEFAULT)
-
-        # Replace classifier head
-        self.model.classifier[1] = nn.Linear(self.model.last_channel, 4)
-
-        self.model.to(self.device)
+        self.model, _, self.preprocess = open_clip.create_model_and_transforms(
+            "RN50",
+            pretrained="openai"
+        )
+        self.model = self.model.to(self.device)
         self.model.eval()
 
-        # Temporary random weights for now
-        # Later you fine-tune this
+        self.tokenizer = open_clip.get_tokenizer("RN50")
 
-        self.transform = transforms.Compose([
-            transforms.ToPILImage(),
-            transforms.Resize((224, 224)),
-            transforms.ToTensor(),
-            transforms.Normalize(
-                mean=[0.485, 0.456, 0.406],
-                std=[0.229, 0.224, 0.225]
-            )
-        ])
-
-        self.classes = [
-            "NORMAL",
-            "SLEEPING",
-            "PHONE_USE",
-            "IDLE"
+        self.labels = [
+            "a security guard standing alert",
+            "a security guard sleeping on duty",
+            "a security guard using a mobile phone",
+            "a security guard sitting idle",
+            "a distracted security guard talking to someone"
         ]
+
+        self.text_tokens = self.tokenizer(self.labels).to(self.device)
+
+        with torch.no_grad():
+            self.text_features = self.model.encode_text(self.text_tokens)
+            self.text_features /= self.text_features.norm(dim=-1, keepdim=True)
 
     def predict(self, frame, person_box):
         x1, y1, x2, y2 = person_box
-
         crop = frame[y1:y2, x1:x2]
-        if crop.size == 0:
-            return "NORMAL", 0.0
 
-        image = self.transform(crop).unsqueeze(0).to(self.device)
+        if crop.size == 0:
+            return "ANALYZING", 0.0
+
+        image = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+        image = Image.fromarray(image)
+        image = self.preprocess(image).unsqueeze(0).to(self.device)
 
         with torch.no_grad():
-            outputs = self.model(image)
-            probs = torch.softmax(outputs, dim=1)
-            confidence, predicted = torch.max(probs, 1)
+            image_features = self.model.encode_image(image)
+            image_features /= image_features.norm(dim=-1, keepdim=True)
 
-        return self.classes[predicted.item()], confidence.item()
+            similarity = (100.0 * image_features @ self.text_features.T).softmax(dim=-1)
+            probs = similarity[0].cpu().numpy()
+
+        best_idx = probs.argmax()
+        confidence = float(probs[best_idx])
+
+        mapped = [
+            "NORMAL",
+            "SLEEPING",
+            "PHONE_USE",
+            "IDLE",
+            "DISTRACTED_OTHER"
+        ]
+
+        return mapped[best_idx], confidence

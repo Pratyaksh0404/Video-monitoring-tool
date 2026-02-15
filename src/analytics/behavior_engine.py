@@ -1,31 +1,37 @@
-from collections import deque
-
+import time
 
 class BehaviorEngine:
-    def __init__(self, history_size=20, confirm_threshold=0.7):
+    def __init__(self):
         self.history = {}
-        self.history_size = history_size
-        self.confirm_threshold = confirm_threshold
+        self.confirm_time = 20
+        self.possible_time = 10
 
-    def update(self, track_id, label, confidence):
+    def update(self, track_id, label):
+        current_time = time.time()
+
         if track_id not in self.history:
-            self.history[track_id] = deque(maxlen=self.history_size)
-
-        self.history[track_id].append((label, confidence))
-
-        # Count label frequency
-        counts = {}
-        for l, c in self.history[track_id]:
-            if c >= self.confirm_threshold:
-                counts[l] = counts.get(l, 0) + 1
-
-        if not counts:
+            self.history[track_id] = {
+                "label": label,
+                "start": current_time
+            }
             return "ANALYZING"
 
-        final_label = max(counts, key=counts.get)
+        if self.history[track_id]["label"] != label:
+            self.history[track_id] = {
+                "label": label,
+                "start": current_time
+            }
+            return "ANALYZING"
 
-        # Require majority in history
-        if counts[final_label] > self.history_size * 0.6:
-            return f"CONFIRMED_{final_label}"
+        duration = current_time - self.history[track_id]["start"]
 
-        return f"POSSIBLE_{final_label}"
+        if label == "NORMAL":
+            return "NORMAL"
+
+        if duration >= self.confirm_time:
+            return f"CONFIRMED_{label}"
+
+        if duration >= self.possible_time:
+            return f"POSSIBLE_{label}"
+
+        return "ANALYZING"
