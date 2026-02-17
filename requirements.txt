@@ -38,4 +38,4 @@ cycler~=0.12.1
 packaging~=26.0
 kiwisolver~=1.4.7
 cffi~=2.0.0
-sklearn
+scikit-learn

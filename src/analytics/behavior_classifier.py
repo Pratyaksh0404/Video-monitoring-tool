@@ -50,6 +50,8 @@ class BehaviorClassifier:
 
         best_idx = probs.argmax()
         confidence = float(probs[best_idx])
+        if confidence < 0.40:
+            return "NORMAL", confidence
 
         mapped = [
             "NORMAL",

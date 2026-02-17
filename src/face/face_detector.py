@@ -8,7 +8,7 @@ class FaceDetector:
         self,
         model_path=None,
         input_size=(320, 320),
-        score_threshold=0.9,
+        score_threshold=0.85,
         nms_threshold=0.3,
         top_k=5000
     ):

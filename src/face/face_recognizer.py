@@ -8,7 +8,7 @@ class FaceRecognizer:
     def __init__(
         self,
         faces_dir="data/enrolled_faces",
-        tolerance=0.65
+        tolerance=0.7
     ):
         self.faces_dir = faces_dir
         self.tolerance = tolerance

@@ -3,27 +3,28 @@ import time
 class BehaviorEngine:
     def __init__(self):
         self.history = {}
-        self.confirm_time = 20
-        self.possible_time = 10
+        self.possible_time = 8
+        self.confirm_time = 15
 
     def update(self, track_id, label):
-        current_time = time.time()
+
+        now = time.time()
 
         if track_id not in self.history:
             self.history[track_id] = {
                 "label": label,
-                "start": current_time
+                "start": now
             }
             return "ANALYZING"
 
         if self.history[track_id]["label"] != label:
             self.history[track_id] = {
                 "label": label,
-                "start": current_time
+                "start": now
             }
             return "ANALYZING"
 
-        duration = current_time - self.history[track_id]["start"]
+        duration = now - self.history[track_id]["start"]
 
         if label == "NORMAL":
             return "NORMAL"

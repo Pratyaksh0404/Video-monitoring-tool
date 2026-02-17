@@ -2,6 +2,7 @@ import sys
 print(sys.executable)
 
 import cv2
+import time
 
 from video.stream_reader import VideoStreamReader
 from detection.person_detector import PersonDetector
@@ -18,14 +19,6 @@ from face.face_recognizer import FaceRecognizer
 POST_AREA = (100, 100, 400, 400)
 MIN_PERSON_HEIGHT = 120
 MIN_PERSON_WIDTH = 40
-
-
-def is_inside_roi(box, roi):
-    x1, y1, x2, y2 = box
-    rx1, ry1, rx2, ry2 = roi
-    cx = (x1 + x2) // 2
-    cy = (y1 + y2) // 2
-    return rx1 <= cx <= rx2 and ry1 <= cy <= ry2
 
 
 def iou(boxA, boxB):
@@ -50,12 +43,14 @@ def iou(boxA, boxB):
 def main():
     stream = VideoStreamReader(source=0)
     detector = PersonDetector(conf_threshold=0.5)
-    tracker = CentroidTracker(max_disappeared=60, max_distance=100)
 
+    # Stabilized tracker
+    tracker = CentroidTracker(max_disappeared=120, max_distance=150)
+
+    # Increase presence tolerance
     presence_monitor = PresenceMonitor(
-        absence_threshold=5,
-        confirm_time=2,
-        min_motion=5
+        absence_threshold=10,
+        confirm_time=3
     )
 
     inactivity_monitor = InactivityMonitor(
@@ -64,17 +59,35 @@ def main():
         window_time=5
     )
 
-    # NEW ML BEHAVIOR SYSTEM
     behavior_classifier = BehaviorClassifier(device="cpu")
     behavior_engine = BehaviorEngine()
 
     face_detector = FaceDetector()
     face_encoder = FaceEncoder()
-    face_recognizer = FaceRecognizer()
+    face_recognizer = FaceRecognizer(tolerance=0.55)  # slightly stricter
+
+    frame_count = 0
+    behavior_cache = {}
+    identity_memory = {}
+
+    presence_buffer = 0
+
+    warmup_frames = 80  # allow system to stabilize
+
     while True:
+
+        frame_count += 1
         frame = stream.read_frame()
         if frame is None:
             break
+
+        # --- Warmup Phase ---
+        if frame_count < warmup_frames:
+            cv2.imshow("Guard Monitoring", frame)
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
+            continue
+
         detections = detector.detect(frame)
 
         person_boxes = []
@@ -87,10 +100,18 @@ def main():
             box = (x1, y1, x2, y2)
             person_boxes.append(box)
 
-            if is_inside_roi(box, POST_AREA):
+            if iou(box, POST_AREA) > 0.25:  # more tolerant
                 valid_centroids.append(((x1 + x2) // 2, (y1 + y2) // 2))
 
-        post_status = presence_monitor.update(valid_centroids)
+        # --- Presence Stabilizer ---
+        if len(valid_centroids) > 0:
+            presence_buffer = 20
+        else:
+            presence_buffer = max(0, presence_buffer - 1)
+
+        buffered_centroids = valid_centroids if presence_buffer > 0 else []
+
+        post_status = presence_monitor.update(buffered_centroids)
 
         if post_status == "PRESENT":
             activity_status = inactivity_monitor.update(valid_centroids)
@@ -105,18 +126,41 @@ def main():
 
         for track_id, person_box in tracked_objects.items():
 
+            # --- Identity Matching ---
             best_iou = 0.0
-            guard_id = "UNKNOWN"
+            recognized_id = "UNKNOWN"
 
             for i, fb in enumerate(face_boxes):
                 overlap = iou(person_box, fb[:4])
                 if overlap > best_iou:
                     best_iou = overlap
-                    guard_id = identities[i] if i < len(identities) else "UNKNOWN"
+                    recognized_id = identities[i] if i < len(identities) else "UNKNOWN"
 
-            # BEHAVIOR PREDICTION
-            label, confidence = behavior_classifier.predict(frame, person_box)
-            final_state = behavior_engine.update(track_id, label)
+            if recognized_id != "UNKNOWN":
+                identity_memory[track_id] = recognized_id
+
+            guard_id = identity_memory.get(track_id, "UNKNOWN")
+
+            # --- Behavior Throttling ---
+            if track_id not in behavior_cache:
+                behavior_cache[track_id] = {
+                    "label": "ANALYZING",
+                    "last_update": 0
+                }
+
+            # Run ML only every 25 frames
+            if frame_count % 25 == 0 and post_status == "PRESENT":
+                label, confidence = behavior_classifier.predict(frame, person_box)
+                behavior_cache[track_id]["label"] = label
+                behavior_cache[track_id]["last_update"] = frame_count
+
+            label = behavior_cache[track_id]["label"]
+
+            # Only evaluate behavior when PRESENT
+            if post_status == "PRESENT":
+                final_state = behavior_engine.update(track_id, label)
+            else:
+                final_state = "ANALYZING"
 
             x1, y1, x2, y2 = person_box
 
@@ -139,6 +183,7 @@ def main():
                 2
             )
 
+        # ROI Box
         rx1, ry1, rx2, ry2 = POST_AREA
         cv2.rectangle(frame, (rx1, ry1), (rx2, ry2), (255, 0, 0), 2)
 
