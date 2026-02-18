@@ -11,7 +11,7 @@ venv1/
 
 # Logs & runtime data
 logs/
-data/
+
 
 # OS files
 .DS_Store
@@ -19,7 +19,3 @@ Thumbs.db
 .idea/workspace.xml
 .idea/
 
-*.pt
-*.yaml
-*.onnx
-*.txt
