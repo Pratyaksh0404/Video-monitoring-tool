@@ -91,145 +91,99 @@ def main():
     identities = []
 
     last_alert_time = {}
-
     ALERT_COOLDOWN = 15
-
+    last_path = {}
 
     while True:
-
         frame_count+=1
-
         frame = stream.read_frame()
-
         if frame is None:
             break
 
-
         if frame_count < warmup_frames:
-
             cv2.imshow("Guard Monitoring",frame)
-
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
-
             continue
 
-
         detections = detector.detect(frame)
-
         person_boxes = []
         valid_centroids = []
 
         for (x1,y1,x2,y2,conf) in detections:
-
             if (x2-x1)<MIN_PERSON_WIDTH or (y2-y1)<MIN_PERSON_HEIGHT:
                 continue
 
             box=(x1,y1,x2,y2)
-
             person_boxes.append(box)
-
             if iou(box,POST_AREA) > 0.25:
-
                 cx=int((x1+x2)/2)
                 cy=int((y1+y2)/2)
-
                 valid_centroids.append((cx,cy))
-
 
         if len(valid_centroids)>0:
             presence_buffer=20
         else:
             presence_buffer=max(0,presence_buffer-1)
 
-
         buffered_centroids = valid_centroids if presence_buffer>0 else []
-
         post_status = presence_monitor.update(buffered_centroids)
-
 
         if post_status=="PRESENT":
             activity_status = inactivity_monitor.update(valid_centroids)
         else:
             activity_status = "NO_PERSON"
 
-
         tracked_objects = tracker.update(person_boxes)
-
         trajectory_tracker.update(tracked_objects)
 
-
         if frame_count % 15 == 0:
-
             face_boxes = face_detector.detect(frame,list(tracked_objects.values()))
-
             face_encodings = face_encoder.encode(frame,face_boxes)
-
             identities = face_recognizer.recognize(face_encodings)
 
-
         for track_id,person_box in tracked_objects.items():
-
             best_iou = 0.0
             recognized_id = "UNKNOWN"
 
             for i,fb in enumerate(face_boxes):
-
                 overlap = iou(person_box,fb[:4])
-
                 if overlap > best_iou:
-
                     best_iou = overlap
-
                     recognized_id = identities[i] if i < len(identities) else "UNKNOWN"
-
 
             if recognized_id != "UNKNOWN":
                 identity_memory[track_id] = recognized_id
 
-
             guard_id = identity_memory.get(track_id,"UNKNOWN")
 
-
             if track_id not in behavior_cache:
-
                 behavior_cache[track_id] = {
                     "label":"ANALYZING",
                     "last_update":0
                 }
 
-
             if frame_count % 20 == 0 and post_status=="PRESENT":
-
                 label,confidence = behavior_classifier.predict(frame,person_box)
-
                 behavior_cache[track_id]["label"] = label
-
                 behavior_cache[track_id]["last_update"] = frame_count
 
-
             label = behavior_cache[track_id]["label"]
-
 
             if post_status=="PRESENT":
                 final_state = behavior_engine.update(track_id,label)
             else:
                 final_state = "ANALYZING"
 
-
             x1,y1,x2,y2 = person_box
-
             color=(0,255,0)
 
             if "CONFIRMED" in final_state:
                 color=(0,0,255)
-
             elif "POSSIBLE" in final_state:
                 color=(0,165,255)
 
-
             cv2.rectangle(frame,(x1,y1),(x2,y2),color,2)
-
 
             cv2.putText(
                 frame,
@@ -241,11 +195,11 @@ def main():
                 2
             )
 
-
             zone = trajectory_tracker.get_current_zone(track_id)
-
             path = trajectory_tracker.get_path(track_id)
-
+            if path and last_path.get(track_id) != path:
+                print("Zone:", path)
+                last_path[track_id] = path
 
             cv2.putText(
                 frame,
@@ -257,7 +211,6 @@ def main():
                 2
             )
 
-
             cv2.putText(
                 frame,
                 f"Path: {path}",
@@ -268,48 +221,33 @@ def main():
                 2
             )
 
-
             current_time = time.time()
 
-
             def send_alert(key,msg):
-
                 last = last_alert_time.get(key,0)
-
                 if current_time - last > ALERT_COOLDOWN:
-
                     alert_manager.send_alert(msg,guard_id)
-
                     last_alert_time[key]=current_time
 
 
             if guard_id!="UNKNOWN":
-
                 if post_status=="ABSENT":
                     send_alert("missing","Guard Missing")
-
                 elif "CONFIRMED_SLEEPING" in final_state:
                     send_alert("sleep","Guard Sleeping")
-
                 elif "CONFIRMED_PHONE_USE" in final_state:
                     send_alert("phone","Phone Usage")
-
                 elif "CONFIRMED_DISTRACTED" in final_state:
                     send_alert("distracted","Guard Distracted")
-
                 elif activity_status=="INACTIVE":
                     send_alert("idle","Guard Idle")
 
-
         rx1,ry1,rx2,ry2 = POST_AREA
-
         cv2.rectangle(frame,(rx1,ry1),(rx2,ry2),(255,0,0),2)
-
 
         post_color=(0,255,0) if post_status=="PRESENT" else (0,255,255) if post_status=="TEMPORARILY_EMPTY" else (0,0,255)
 
         activity_color=(0,255,0) if activity_status=="ACTIVE" else (0,0,255) if activity_status=="INACTIVE" else (255,255,255)
-
 
         cv2.putText(frame,f"Post Status: {post_status}",(20,40),
                     cv2.FONT_HERSHEY_SIMPLEX,0.8,post_color,2)
@@ -317,16 +255,12 @@ def main():
         cv2.putText(frame,f"Activity Status: {activity_status}",(20,70),
                     cv2.FONT_HERSHEY_SIMPLEX,0.8,activity_color,2)
 
-
         cv2.imshow("Guard Monitoring",frame)
-
 
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break
 
-
     stream.release()
-
     cv2.destroyAllWindows()
 
 
