@@ -1,116 +1,165 @@
 # 🛡️ Vision-Based Guard Monitoring System
 
-An AI-powered real-time CCTV analytics system for **security guard compliance monitoring**, built using Computer Vision and Deep Learning.
+An **AI-powered real-time CCTV analytics system** for **security guard compliance monitoring**, built using Computer Vision and Deep Learning.
 
-This system upgrades traditional CCTV feeds into an intelligent monitoring platform capable of detecting:
+This system upgrades traditional CCTV feeds into an **intelligent monitoring platform** capable of automatically detecting guard behavior violations and operational risks.
 
-- Guard presence / absence  
-- Inactivity / idleness  
-- Sleeping on duty  
-- Mobile phone usage  
-- Distraction behaviors  
-- Real-time behavior violations  
+The system analyzes live video feeds to detect:
 
----
-
-# 📌 Project Scope (As Per Product Document)
-
-## Core Detection & Alert Capabilities
-
-✔ Real-time detection of people and behaviors from live video  
-✔ Intelligent monitoring without hardware replacement  
-✔ Automated supervision to reduce manual oversight  
-✔ Real-time flagging of suspicious or negligent behavior  
-✔ Enhanced operational efficiency  
+* Guard presence / absence
+* Guard inactivity or idleness
+* Sleeping on duty
+* Mobile phone usage
+* Distraction behaviors
+* Guard patrol movement inside the monitored area
+* Real-time violation alerts
 
 ---
 
-## Personnel Monitoring (Guard Compliance)
+# 📌 Project Scope
 
-✔ Detect guard absence from designated post  
-✔ Detect sleeping on duty  
-✔ Detect prolonged idleness  
-✔ Detect mobile phone usage  
-✔ Detect distraction behaviors  
-✔ Behavior persistence → Possible / Confirmed violation logic  
+The goal of this project is to transform **standard CCTV systems into intelligent monitoring tools** capable of assisting supervisors in ensuring guard compliance and operational safety.
+
+The system performs **real-time behavioral analysis** without requiring any additional hardware.
+
+### Key Objectives
+
+* Real-time guard monitoring from CCTV feeds 
+* Automated detection of security violations 
+* Reduced need for manual supervision 
+* Real-time alert generation 
+* Patrol movement analysis inside the monitored zone
+
+---
+
+# 👮 Guard Monitoring Capabilities
+
+The system monitors security guard activity using computer vision models.
+
+### Guard Compliance Detection
+
+* Guard absence from assigned post 
+* Sleeping on duty 
+* Prolonged inactivity 
+* Mobile phone usage 
+* Distraction behaviors
+
+### Patrol Monitoring
+
+* Guard trajectory tracking inside monitored area 
+* Zone-based patrol tracking 
+* Patrol movement logging
+
+Example trajectory:
+
+```
+Zone: D → C → B → A
+```
 
 ---
 
 # 🧠 System Architecture
 
-The system follows a modular ML-based architecture:
+The system follows a **modular computer vision pipeline**:
 
 ```
 Video Stream
      ↓
 Person Detection (YOLOv8)
      ↓
-Tracking (Centroid Tracker)
+Multi-Object Tracking (Centroid Tracker)
      ↓
 Face Detection + Recognition
      ↓
-Behavior Classification (CLIP-based Zero-Shot)
+Behavior Classification (CLIP-based)
      ↓
 Temporal Behavior Engine
      ↓
-Violation Decision Engine
+Presence & Activity Monitoring
      ↓
-Alert Trigger (Next Phase)
+Trajectory Tracking
+     ↓
+Violation Engine
+     ↓
+Alert Manager
+     ↓
+Logs / Console Output
 ```
+
+This modular design allows easy scaling and component upgrades.
 
 ---
 
-# 🏗️ Folder Structure
+# 🏗️ Project Folder Structure
 
 ```
-Video-monitoring-tool/
+VIDEO_MONITORING_TOOL/
 │
-├── main.py
 ├── requirements.txt
-├── yolov8n.pt
-├── kinetics_labels.txt
+├── .gitignore
 │
-├── analytics/
+├── config/
+│   ├── camera_config.yaml
+│   └── rules_config.yaml
+│
+├── src/
+│   ├── main.py
+│   ├── kinetics_labels.txt
+│   └── yolov8n.pt
+│
+├── src/alerts/
+│   └── alert_manager.py
+│
+├── src/analytics/
+│   ├── action_recognition.py
 │   ├── behavior_classifier.py
 │   ├── behavior_engine.py
-│   ├── action_recognition.py
-│   ├── presence.py
 │   ├── inactivity.py
+│   ├── patrol_analyzer.py
+│   ├── presence.py
+│   ├── state_stabilizer.py
+│   ├── trajectory_tracker.py
 │   └── violation_engine.py
 │
-├── detection/
-│   ├── person_detector.py
+├── src/detection/
 │   ├── object_detector.py
+│   ├── person_detector.py
 │   └── tracker.py
 │
-├── face/
+├── src/face/
 │   ├── face_detector.py
 │   ├── face_encoder.py
 │   ├── face_recognizer.py
+│   │
 │   └── models/
 │       ├── face_detection_yunet_2023mar.onnx
 │       └── lbfmodel.yaml
 │
-├── video/
+├── src/data/
+│   └── enrolled_faces/
+│       ├── guard_1/
+│       └── guard_2/
+│
+├── src/video/
 │   ├── stream_reader.py
 │   └── video_utils.py
 │
-├── training/
+├── src/utils/
+│   ├── logger.py
+│   └── timer.py
+│
+├── src/training/
 │   └── train_behavior.py
 │
-├── alerts/
-│   └── alert_manager.py
-│
-└── data/
-    └── enrolled_faces/
-        └── <Guard_Name>/
+└── src/logs/
+    └── system.log
 ```
 
 ---
 
 # 🚀 Installation Guide
 
-## Step 1 — Clone Repository
+## 1️⃣ Clone Repository
 
 ```bash
 git clone https://github.com/Pratyaksh0404/Video-monitoring-tool.git
@@ -119,146 +168,228 @@ cd Video-monitoring-tool
 
 ---
 
-## Step 2 — Create Virtual Environment
+## 2️⃣ Create Virtual Environment
 
 ```bash
 python -m venv venv
 ```
 
-Activate:
+Activate environment:
 
 ### Windows
-```bash
+
+```
 venv\Scripts\activate
 ```
 
-### Mac/Linux
-```bash
+### Linux / Mac
+
+```
 source venv/bin/activate
 ```
 
 ---
 
-## Step 3 — Install Dependencies
+## 3️⃣ Install Dependencies
 
-```bash
+```
 pip install -r requirements.txt
 ```
 
 ---
 
-## Step 4 — Run the System
+## 4️⃣ Run the System
 
-```bash
+```
 python src/main.py
 ```
 
-Press `q` to exit the application.
+Press **`q`** to exit the application.
 
 ---
 
 # 🧠 Behavior Detection Approach
 
-Instead of fragile rule-based logic, this system uses:
+The system uses **CLIP-based zero-shot behavior classification** instead of fragile rule-based methods.
 
-## 🔹 OpenCLIP (RN50)
-Zero-shot behavior classification using natural language prompts:
+Example prompts used for classification:
 
-- "a security guard standing alert"
-- "a security guard sleeping on duty"
-- "a security guard using a mobile phone"
-- "a security guard sitting idle"
-- "a distracted security guard talking to someone"
+* "a security guard standing alert"
+* "a security guard sleeping on duty"
+* "a security guard using a mobile phone"
+* "a security guard sitting idle"
+* "a distracted security guard talking to someone"
 
-## 🔹 Temporal Confirmation Engine
+---
 
-Each detected behavior passes through time persistence filtering:
+# ⏱️ Temporal Behavior Engine
 
-| Duration         | Output      |
-|------------------|-------------|
-| less than 5 sec  | ANALYZING   |
-| 5–10 sec         | POSSIBLE_X  |
-| more than 10 sec | CONFIRMED_X |
+Behavior detection uses **time-based persistence filtering** to reduce false positives.
 
-This significantly reduces false positives.
+| Duration   | Output      |
+| ---------- | ----------- |
+| < 5 sec    | ANALYZING   |
+| 5 – 10 sec | POSSIBLE_X  |
+| > 10 sec   | CONFIRMED_X |
+
+Example:
+
+```
+CONFIRMED_SLEEPING
+CONFIRMED_PHONE_USE
+CONFIRMED_DISTRACTED
+```
 
 ---
 
 # 👤 Face Recognition
 
-Guards are enrolled via:
+Guards are enrolled inside:
 
 ```
-data/enrolled_faces/<Guard_Name>/
+SRC/data/enrolled_faces/<Guard_Name>/
 ```
 
-Multiple images per guard improve multi-angle recognition stability.
+Multiple images per guard improve recognition stability.
 
-Face encodings are generated using the `face_recognition` (dlib-based) library.
+Face embeddings are generated using:
+
+```
+face_recognition (dlib)
+```
+
+Recognition allows the system to associate **alerts with specific guards**.
 
 ---
 
-# ⚙️ Current Capabilities
+# 📍 Trajectory Tracking
 
-| Feature | Status |
-|----------|--------|
-| Guard Presence | ✅ Stable |
-| Active / Inactive Detection | ✅ Stable |
-| Sleeping Detection | ✅ Stable |
-| Phone Usage Detection | ✅ Stable |
-| Idle Detection | ✅ Stable |
-| Distraction Detection | ✅ Stable |
-| Identity Persistence | ✅ Implemented |
-| Trajectory Tracking | 🔜 Next Phase |
-| Alert System (Email/SMS) | 🔜 Next Phase |
+The monitored region is divided into **patrol zones**.
+
+Example layout:
+
+```
+A | B
+-----
+C | D
+```
+
+The system tracks guard movement across zones to analyze patrol coverage.
+
+Example:
+
+```
+Zone: D → C → B → A
+```
+
+Trajectory tracking enables:
+
+* Patrol movement analysis
+* Patrol compliance monitoring
+* Guard activity validation
+
+---
+
+# 🚨 Alert System
+
+The system generates alerts when violations occur.
+
+Current alerts include:
+
+* Guard Missing
+* Guard Sleeping
+* Phone Usage
+* Guard Distracted
+* Guard Idle
+
+Alerts are currently:
+
+* Printed to console
+* Logged in `logs/system.log`
+
+Future versions will support **SMS / email alerts**.
 
 ---
 
 # ⚡ Performance Notes
 
-- Optimized for CPU execution  
-- CLIP inference reduced frequency to minimize lag  
-- Identity memory prevents rapid UNKNOWN switching  
-- Startup stabilization prevents early false positives  
+* Designed to run on **CPU systems**
+* Detection frequency optimized to reduce lag
+* Identity memory prevents frequent UNKNOWN switching
+* Startup stabilization prevents early false positives
 
-GPU support will significantly improve performance.
+GPU acceleration will significantly improve performance.
 
 ---
 
 # 🛠️ Future Enhancements
 
-- Real-time email/SMS alert integration  
-- Guard trajectory mapping  
-- Patrol route compliance verification  
-- Dashboard interface  
-- Multi-camera deployment  
-- Docker deployment configuration  
+Planned improvements include:
+
+### System Improvements
+
+* Patrol trajectory stabilization
+* Structured alert logging
+* Performance optimization
+
+### Product Features
+
+* Multi-camera support
+* Web-based monitoring dashboard
+* Alert notification system
+* Guard patrol analytics
+* Patrol compliance scoring
+
+### Deployment
+
+* Docker deployment
+* Cloud monitoring pipeline
+* Edge device optimization
 
 ---
 
 # 📊 Technology Stack
 
-- Python  
-- OpenCV  
-- YOLOv8 (Ultralytics)  
-- OpenCLIP  
-- PyTorch  
-- dlib (face recognition)  
-- NumPy  
+| Component               | Technology              |
+| ----------------------- | ----------------------- |
+| Language                | Python                  |
+| Computer Vision         | OpenCV                  |
+| Detection Model         | YOLOv8 (Ultralytics)    |
+| Behavior Classification | OpenCLIP                |
+| Deep Learning           | PyTorch                 |
+| Face Recognition        | dlib / face_recognition |
+| Tracking                | Centroid Tracker        |
+| Data Processing         | NumPy                   |
 
 ---
 
 # 🧪 Development Status
+## Current stage:
 
-System is currently:
+**Phase-1 Prototype**
 
-> Stable for demo and prototype validation  
-> Ready for installation and demonstration  
+Capabilities implemented:
 
-Further tuning can improve robustness under extreme posture variations.
+* Guard presence monitoring
+* Activity detection
+* Sleeping detection
+* Phone usage detection
+* Distraction detection 
+* Face recognition 
+* Guard identity persistence 
+* Patrol trajectory tracking 
+* Alert generation
+
+The system is **stable for prototype demonstrations and product validation**.
 
 ---
 
 # ⚠️ Disclaimer
 
-This system is intended for authorized security monitoring use cases only.
+This system is intended only for **authorized security monitoring applications**.
+Use of this system must comply with applicable privacy and surveillance regulations.
+
+---
+## 👤 Author
+
+### Pratyaksh Agrawal
