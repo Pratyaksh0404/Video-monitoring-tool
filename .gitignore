@@ -19,4 +19,6 @@ Thumbs.db
 .idea/workspace.xml
 .idea/
 
-data/
+uploads/
+model_cache/
+src/data/enrolled_faces/Pratyaksh/

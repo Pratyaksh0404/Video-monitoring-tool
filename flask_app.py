@@ -1,0 +1,183 @@
+"""
+flask_app.py  —  Web server for the Guard Monitoring Dashboard.
+
+Run with:
+    python flask_app.py
+
+Routes:
+    GET  /                   → dashboard HTML
+    GET  /video_feed         → MJPEG stream
+    GET  /alerts/stream      → SSE alert stream
+    GET  /api/stats          → JSON stats
+    POST /api/upload         → upload recorded video
+    POST /api/source/webcam  → switch back to webcam
+    GET  /api/alerts/export  → download CSV or JSON
+"""
+
+import sys
+import os
+# MUST be before any src/ imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
+
+import json
+import time
+import queue
+import threading
+import datetime
+
+from flask import (
+    Flask, render_template, Response,
+    request, jsonify, stream_with_context
+)
+from werkzeug.utils import secure_filename
+
+import main_web
+from video_streamer import streamer
+from alerts.alert_manager import alert_queue   # ← src/alerts/ — same module as main_web
+
+
+app = Flask(__name__)
+app.config["UPLOAD_FOLDER"] = "uploads"
+app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024
+
+os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
+
+ALLOWED_EXTENSIONS = {"mp4", "avi", "mov", "mkv", "webm"}
+
+_alert_log      = []
+_alert_log_lock = threading.Lock()
+_sse_subscribers= []
+_sse_lock       = threading.Lock()
+
+
+def allowed_file(fn):
+    return "." in fn and fn.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+def alert_dispatcher():
+    """Drain alert_queue → log + fan out to all SSE clients."""
+    today       = datetime.date.today()
+    daily_count = 0
+
+    while True:
+        try:
+            alert = alert_queue.get(timeout=1)
+        except queue.Empty:
+            if datetime.date.today() != today:
+                today = datetime.date.today()
+                daily_count = 0
+            continue
+
+        daily_count += 1
+        streamer.update_stats(alerts_today=daily_count)
+
+        with _alert_log_lock:
+            _alert_log.append(alert)
+            if len(_alert_log) > 500:
+                _alert_log.pop(0)
+
+        payload = f"data: {json.dumps(alert)}\n\n"
+        with _sse_lock:
+            dead = []
+            for q in _sse_subscribers:
+                try:
+                    q.put_nowait(payload)
+                except queue.Full:
+                    dead.append(q)
+            for q in dead:
+                _sse_subscribers.remove(q)
+
+
+# ── Routes ────────────────────────────────────────────────────────────────────
+
+@app.route("/")
+def index():
+    return render_template("dashboard.html")
+
+
+@app.route("/video_feed")
+def video_feed():
+    return Response(
+        stream_with_context(streamer.generate_mjpeg()),
+        mimetype="multipart/x-mixed-replace; boundary=frame"
+    )
+
+
+@app.route("/alerts/stream")
+def alerts_stream():
+    def generate():
+        q = queue.Queue(maxsize=200)
+        with _sse_lock:
+            _sse_subscribers.append(q)
+
+        # Send recent history on connect so log panel isn't empty
+        with _alert_log_lock:
+            history = list(_alert_log[-50:])
+        for alert in history:
+            yield f"data: {json.dumps(alert)}\n\n"
+
+        try:
+            while True:
+                try:
+                    yield q.get(timeout=20)
+                except queue.Empty:
+                    yield ": keepalive\n\n"
+        except GeneratorExit:
+            with _sse_lock:
+                if q in _sse_subscribers:
+                    _sse_subscribers.remove(q)
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    )
+
+
+@app.route("/api/stats")
+def api_stats():
+    return jsonify(streamer.stats)
+
+
+@app.route("/api/upload", methods=["POST"])
+def api_upload():
+    if "video" not in request.files:
+        return jsonify({"error": "No file"}), 400
+    f = request.files["video"]
+    if not f.filename or not allowed_file(f.filename):
+        return jsonify({"error": "Invalid file"}), 400
+    filename = secure_filename(f.filename)
+    filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
+    f.save(filepath)
+    main_web.start(source=filepath, source_label=filename)
+    return jsonify({"ok": True, "file": filename})
+
+
+@app.route("/api/source/webcam", methods=["POST"])
+def api_webcam():
+    main_web.start(source=0, source_label="Camera 0")
+    return jsonify({"ok": True})
+
+
+@app.route("/api/alerts/export")
+def api_export():
+    fmt = request.args.get("format", "json")
+    with _alert_log_lock:
+        log = list(_alert_log)
+    if fmt == "csv":
+        lines = ["timestamp,type,guard_id,zone,severity"]
+        for a in log:
+            lines.append(f"{a['timestamp']},{a['type']},{a['guard_id']},{a['zone']},{a['severity']}")
+        return Response("\n".join(lines), mimetype="text/csv",
+                        headers={"Content-Disposition": "attachment; filename=alerts.csv"})
+    return Response(json.dumps(log, indent=2), mimetype="application/json",
+                    headers={"Content-Disposition": "attachment; filename=alerts.json"})
+
+
+# ── Startup ───────────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    threading.Thread(target=alert_dispatcher, daemon=True).start()
+    main_web.start(source=0, source_label="Camera 0")
+    print("\n  Dashboard → http://127.0.0.1:5000\n")
+    app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)

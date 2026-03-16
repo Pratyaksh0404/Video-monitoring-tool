@@ -1,0 +1,814 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Guard Monitoring System</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:       #0d0f12;
+    --surface:  #13161b;
+    --panel:    #181c22;
+    --border:   #252a33;
+    --border2:  #2e3540;
+    --text:     #cdd3db;
+    --muted:    #5a6474;
+    --accent:   #3b82f6;
+    --ok:       #22c55e;
+    --warn:     #f59e0b;
+    --danger:   #ef4444;
+    --mono:     'IBM Plex Mono', monospace;
+    --sans:     'IBM Plex Sans', sans-serif;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 13px;
+    overflow: hidden;
+  }
+
+  /* ── Layout shell ─────────────────────────────────────────── */
+  .shell {
+    display: grid;
+    grid-template-rows: 44px 60px 1fr;
+    height: 100vh;
+  }
+
+  /* ── Top bar ──────────────────────────────────────────────── */
+  .topbar {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 0 20px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .logo {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 0.05em;
+    color: #fff;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .pulse-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--ok);
+    animation: pulse 1.6s ease-in-out infinite;
+  }
+  .pulse-dot.idle { background: var(--muted); animation: none; }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0.3; }
+  }
+
+  .topbar-right {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .mode-badge {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    padding: 3px 8px;
+    border-radius: 3px;
+    border: 1px solid var(--ok);
+    color: var(--ok);
+  }
+  .mode-badge.recorded {
+    border-color: var(--warn);
+    color: var(--warn);
+  }
+
+  .cam-label {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+  }
+
+  /* ── Stats bar ────────────────────────────────────────────── */
+  .statsbar {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+  }
+
+  .stat {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 0 20px;
+    border-right: 1px solid var(--border);
+  }
+  .stat:last-child { border-right: none; }
+
+  .stat-label {
+    font-family: var(--mono);
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+    text-transform: uppercase;
+    margin-bottom: 2px;
+  }
+
+  .stat-val {
+    font-family: var(--mono);
+    font-size: 22px;
+    font-weight: 500;
+    color: var(--text);
+    line-height: 1;
+  }
+  .stat-val.danger { color: var(--danger); }
+  .stat-val.ok     { color: var(--ok); }
+  .stat-val.warn   { color: var(--warn); }
+
+  /* ── Main panels ──────────────────────────────────────────── */
+  .panels {
+    display: grid;
+    grid-template-columns: 1fr 380px;
+    overflow: hidden;
+  }
+
+  /* ── Video panel ──────────────────────────────────────────── */
+  .video-panel {
+    position: relative;
+    background: #000;
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid var(--border);
+    overflow: hidden;
+  }
+
+  .video-wrap {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  #live-img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+  }
+
+  .no-feed {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  .no-feed svg { opacity: 0.3; }
+
+  /* Zone grid overlay */
+  .zone-overlay {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+  .zone-overlay::before {
+    content: '';
+    position: absolute;
+    left: 50%; top: 0; bottom: 0;
+    width: 1px;
+    background: rgba(255,255,255,0.07);
+  }
+  .zone-overlay::after {
+    content: '';
+    position: absolute;
+    top: 50%; left: 0; right: 0;
+    height: 1px;
+    background: rgba(255,255,255,0.07);
+  }
+  .zone-labels {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    font-family: var(--mono);
+    font-size: 10px;
+    color: rgba(255,255,255,0.25);
+    letter-spacing: 0.1em;
+  }
+  .zone-labels span {
+    position: absolute;
+    padding: 4px 6px;
+  }
+
+  /* Video controls bar */
+  .video-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+
+  .ctrl-btn {
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 5px 12px;
+    border-radius: 3px;
+    border: 1px solid var(--border2);
+    background: transparent;
+    color: var(--text);
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+    white-space: nowrap;
+  }
+  .ctrl-btn:hover { background: var(--panel); border-color: var(--muted); }
+  .ctrl-btn.primary {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .ctrl-btn.primary:hover { background: rgba(59,130,246,0.1); }
+  .ctrl-btn.danger-btn {
+    border-color: var(--danger);
+    color: var(--danger);
+  }
+
+  .upload-label {
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 5px 12px;
+    border-radius: 3px;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    cursor: pointer;
+    transition: background 0.15s;
+    white-space: nowrap;
+  }
+  .upload-label:hover { background: rgba(59,130,246,0.1); }
+
+  #upload-input { display: none; }
+
+  .upload-progress {
+    flex: 1;
+    height: 2px;
+    background: var(--border);
+    border-radius: 1px;
+    overflow: hidden;
+    display: none;
+  }
+  .upload-progress-bar {
+    height: 100%;
+    background: var(--accent);
+    width: 0%;
+    transition: width 0.3s;
+  }
+
+  .fps-badge {
+    margin-left: auto;
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+    letter-spacing: 0.05em;
+  }
+
+  /* ── Log panel ────────────────────────────────────────────── */
+  .log-panel {
+    display: flex;
+    flex-direction: column;
+    background: var(--panel);
+    overflow: hidden;
+  }
+
+  .log-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+
+  .log-title {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.15em;
+    color: var(--muted);
+    text-transform: uppercase;
+  }
+
+  .log-count {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+  }
+
+  .filter-row {
+    display: flex;
+    gap: 6px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+    flex-shrink: 0;
+  }
+
+  .filter-chip {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.05em;
+    padding: 3px 9px;
+    border-radius: 2px;
+    border: 1px solid var(--border2);
+    color: var(--muted);
+    cursor: pointer;
+    background: transparent;
+    transition: all 0.15s;
+  }
+  .filter-chip:hover { border-color: var(--text); color: var(--text); }
+  .filter-chip.active {
+    border-color: var(--danger);
+    color: var(--danger);
+    background: rgba(239,68,68,0.08);
+  }
+  .filter-chip.active.ok-chip {
+    border-color: var(--ok);
+    color: var(--ok);
+    background: rgba(34,197,94,0.08);
+  }
+
+  .log-list {
+    flex: 1;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border2) transparent;
+  }
+  .log-list::-webkit-scrollbar { width: 4px; }
+  .log-list::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+
+  .log-item {
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--border);
+    cursor: default;
+    transition: background 0.1s;
+  }
+  .log-item:hover { background: rgba(255,255,255,0.02); }
+  .log-item.hidden { display: none; }
+
+  .log-top {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin-bottom: 3px;
+  }
+
+  .sev-bar {
+    width: 3px;
+    height: 32px;
+    border-radius: 2px;
+    flex-shrink: 0;
+    align-self: stretch;
+  }
+  .sev-bar.high   { background: var(--danger); }
+  .sev-bar.medium { background: var(--warn); }
+  .sev-bar.low    { background: var(--ok); }
+
+  .log-body { flex: 1; }
+
+  .log-type {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text);
+    letter-spacing: 0.02em;
+  }
+
+  .log-meta {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+    margin-top: 2px;
+  }
+
+  .log-time {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+    margin-left: auto;
+    white-space: nowrap;
+    align-self: flex-start;
+  }
+
+  .new-flash {
+    animation: flashIn 0.4s ease-out;
+  }
+  @keyframes flashIn {
+    from { background: rgba(239,68,68,0.15); }
+    to   { background: transparent; }
+  }
+
+  .export-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-top: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+
+  .exp-btn {
+    font-family: var(--mono);
+    font-size: 10px;
+    padding: 4px 10px;
+    border-radius: 2px;
+    border: 1px solid var(--border2);
+    color: var(--muted);
+    background: transparent;
+    cursor: pointer;
+    text-decoration: none;
+    transition: all 0.15s;
+  }
+  .exp-btn:hover { border-color: var(--text); color: var(--text); }
+
+  .autoscroll-label {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+    cursor: pointer;
+    user-select: none;
+  }
+  input[type=checkbox] { accent-color: var(--accent); width: 12px; height: 12px; }
+
+  /* ── Toast ────────────────────────────────────────────────── */
+  .toast {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    background: var(--surface);
+    border: 1px solid var(--border2);
+    border-left: 3px solid var(--accent);
+    padding: 10px 14px;
+    border-radius: 4px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text);
+    opacity: 0;
+    transform: translateY(8px);
+    transition: opacity 0.2s, transform 0.2s;
+    pointer-events: none;
+    z-index: 999;
+    max-width: 300px;
+  }
+  .toast.danger-toast { border-left-color: var(--danger); }
+  .toast.show { opacity: 1; transform: translateY(0); }
+</style>
+</head>
+<body>
+
+<div class="shell">
+
+  <!-- ── Top bar ───────────────────────────────────────────── -->
+  <div class="topbar">
+    <div class="logo">
+      <div class="pulse-dot" id="pulse-dot"></div>
+      GMS
+    </div>
+    <div class="cam-label" id="cam-label">Camera 0</div>
+    <div class="topbar-right">
+      <span class="mode-badge" id="mode-badge">LIVE</span>
+    </div>
+  </div>
+
+  <!-- ── Stats bar ─────────────────────────────────────────── -->
+  <div class="statsbar">
+    <div class="stat">
+      <div class="stat-label">Guards detected</div>
+      <div class="stat-val ok" id="s-guards">—</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Active violations</div>
+      <div class="stat-val danger" id="s-violations">0</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Alerts today</div>
+      <div class="stat-val" id="s-alerts">0</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Processing FPS</div>
+      <div class="stat-val" id="s-fps">—</div>
+    </div>
+  </div>
+
+  <!-- ── Panels ─────────────────────────────────────────────── -->
+  <div class="panels">
+
+    <!-- Video panel -->
+    <div class="video-panel">
+      <div class="video-wrap">
+        <img id="live-img" src="/video_feed" alt="Video feed">
+
+        <!-- Zone overlay -->
+        <div class="zone-overlay"></div>
+        <div class="zone-labels">
+          <span style="top:6px; left:8px">A</span>
+          <span style="top:6px; right:8px">B</span>
+          <span style="bottom:40px; left:8px">C</span>
+          <span style="bottom:40px; right:8px">D</span>
+        </div>
+
+        <!-- No-feed placeholder (hidden once stream starts) -->
+        <div class="no-feed" id="no-feed">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
+            <rect x="2" y="7" width="15" height="11" rx="2"/>
+            <path d="M17 9l4-2v10l-4-2V9z"/>
+          </svg>
+          <span>Waiting for video feed…</span>
+        </div>
+      </div>
+
+      <!-- Controls -->
+      <div class="video-controls">
+        <button class="ctrl-btn primary" id="btn-webcam" onclick="switchToWebcam()">
+          Switch to webcam
+        </button>
+
+        <label class="upload-label" for="upload-input">
+          Upload video
+        </label>
+        <input type="file" id="upload-input" accept=".mp4,.avi,.mov,.mkv,.webm"
+               onchange="uploadVideo(this)">
+
+        <div class="upload-progress" id="upload-progress">
+          <div class="upload-progress-bar" id="upload-bar"></div>
+        </div>
+
+        <span class="fps-badge" id="fps-badge">— fps</span>
+      </div>
+    </div>
+
+    <!-- Log panel -->
+    <div class="log-panel">
+      <div class="log-header">
+        <span class="log-title">Alert log</span>
+        <span class="log-count" id="log-count">0 events</span>
+      </div>
+
+      <div class="filter-row">
+        <button class="filter-chip active" data-filter="all" onclick="setFilter('all',this)">All</button>
+        <button class="filter-chip" data-filter="sleeping" onclick="setFilter('sleeping',this)">Sleeping</button>
+        <button class="filter-chip" data-filter="phone" onclick="setFilter('phone',this)">Phone</button>
+        <button class="filter-chip" data-filter="idle" onclick="setFilter('idle',this)">Idle</button>
+        <button class="filter-chip" data-filter="absent" onclick="setFilter('absent',this)">Absent</button>
+        <button class="filter-chip" data-filter="distracted" onclick="setFilter('distracted',this)">Distracted</button>
+        <button class="filter-chip" data-filter="patrol" onclick="setFilter('patrol',this)">Patrol</button>
+      </div>
+
+      <div class="log-list" id="log-list"></div>
+
+      <div class="export-row">
+        <a class="exp-btn" href="/api/alerts/export?format=csv">Export CSV</a>
+        <a class="exp-btn" href="/api/alerts/export?format=json">Export JSON</a>
+        <label class="autoscroll-label">
+          <input type="checkbox" id="autoscroll" checked>
+          Auto-scroll
+        </label>
+      </div>
+    </div>
+
+  </div><!-- /panels -->
+</div><!-- /shell -->
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────
+let alertCount = 0;
+let violationCount = 0;
+let currentFilter = 'all';
+let autoScroll = true;
+let streamMode = 'live';   // 'live' | 'recorded'
+
+// ── SSE — alert stream ─────────────────────────────────────────
+const evtSource = new EventSource('/alerts/stream');
+
+evtSource.onmessage = function(e) {
+  const alert = JSON.parse(e.data);
+  appendAlert(alert, true);
+  updateViolationCount(alert);
+};
+
+evtSource.onerror = function() {
+  showToast('Alert stream disconnected — reconnecting…', false);
+};
+
+// ── Stats polling ──────────────────────────────────────────────
+function pollStats() {
+  fetch('/api/stats')
+    .then(r => r.json())
+    .then(d => {
+      document.getElementById('s-fps').textContent        = d.fps ?? '—';
+      document.getElementById('fps-badge').textContent    = (d.fps ?? '—') + ' fps';
+      document.getElementById('s-alerts').textContent     = d.alerts_today ?? alertCount;
+      document.getElementById('s-violations').textContent = d.active_violations ?? violationCount;
+      document.getElementById('s-guards').textContent     = d.guards_detected ?? '—';
+      document.getElementById('cam-label').textContent    = d.source_label || 'Camera 0';
+
+      const isFile = d.source_type === 'file';
+      document.getElementById('mode-badge').textContent   = isFile ? 'RECORDED' : 'LIVE';
+      document.getElementById('mode-badge').className     = 'mode-badge' + (isFile ? ' recorded' : '');
+      document.getElementById('pulse-dot').className      = 'pulse-dot' + (isFile ? ' idle' : '');
+    })
+    .catch(() => {});
+}
+setInterval(pollStats, 2000);
+pollStats();
+
+// ── Alert rendering ────────────────────────────────────────────
+function appendAlert(a, isNew) {
+  alertCount++;
+  document.getElementById('log-count').textContent = alertCount + ' event' + (alertCount === 1 ? '' : 's');
+  document.getElementById('s-alerts').textContent = alertCount;
+
+  const item = document.createElement('div');
+  item.className = 'log-item' + (isNew ? ' new-flash' : '');
+  item.dataset.type = a.type.toLowerCase();
+
+  item.innerHTML = `
+    <div class="log-top">
+      <div class="sev-bar ${a.severity}"></div>
+      <div class="log-body">
+        <div class="log-type">${escHtml(a.type)}</div>
+        <div class="log-meta">${escHtml(a.guard_id)} &middot; Zone ${escHtml(a.zone)}</div>
+      </div>
+      <div class="log-time">${escHtml(a.timestamp)}</div>
+    </div>
+  `;
+
+  applyFilter(item, currentFilter);
+
+  const list = document.getElementById('log-list');
+  list.prepend(item);   // newest at top
+
+  // Keep DOM manageable
+  const items = list.querySelectorAll('.log-item');
+  if (items.length > 200) items[items.length - 1].remove();
+
+  if (isNew && a.severity === 'high') {
+    showToast(a.type + ' — ' + a.guard_id, true);
+  }
+}
+
+function updateViolationCount(a) {
+  if (a.severity === 'high') {
+    violationCount++;
+    document.getElementById('s-violations').textContent = violationCount;
+  }
+}
+
+// ── Filtering ──────────────────────────────────────────────────
+const filterMap = {
+  sleeping:   ['sleeping', 'guard sleeping'],
+  phone:      ['phone', 'phone usage'],
+  idle:       ['idle', 'guard idle'],
+  absent:     ['missing', 'absent', 'guard missing'],
+  distracted: ['distracted', 'guard distracted'],
+  patrol:     ['patrol'],
+  all:        [],
+};
+
+function setFilter(key, el) {
+  currentFilter = key;
+  document.querySelectorAll('.filter-chip').forEach(c => c.classList.remove('active'));
+  el.classList.add('active');
+
+  document.querySelectorAll('.log-item').forEach(item => applyFilter(item, key));
+}
+
+function applyFilter(item, filter) {
+  if (filter === 'all') {
+    item.classList.remove('hidden');
+    return;
+  }
+  const terms = filterMap[filter] || [];
+  const type = item.dataset.type || '';
+  const matches = terms.some(t => type.includes(t));
+  item.classList.toggle('hidden', !matches);
+}
+
+// ── Video upload ───────────────────────────────────────────────
+function uploadVideo(input) {
+  const file = input.files[0];
+  if (!file) return;
+
+  const prog = document.getElementById('upload-progress');
+  const bar  = document.getElementById('upload-bar');
+  prog.style.display = 'block';
+  bar.style.width = '0%';
+
+  const fd = new FormData();
+  fd.append('video', file);
+
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', '/api/upload');
+
+  xhr.upload.onprogress = function(e) {
+    if (e.lengthComputable) {
+      bar.style.width = Math.round((e.loaded / e.total) * 100) + '%';
+    }
+  };
+
+  xhr.onload = function() {
+    prog.style.display = 'none';
+    if (xhr.status === 200) {
+      const d = JSON.parse(xhr.responseText);
+      showToast('Processing: ' + d.file, false);
+      streamMode = 'recorded';
+      // Reset img src to refresh the MJPEG stream
+      refreshStream();
+    } else {
+      showToast('Upload failed', true);
+    }
+    input.value = '';
+  };
+
+  xhr.onerror = function() {
+    prog.style.display = 'none';
+    showToast('Upload error', true);
+    input.value = '';
+  };
+
+  xhr.send(fd);
+}
+
+function switchToWebcam() {
+  fetch('/api/source/webcam', { method: 'POST' })
+    .then(r => r.json())
+    .then(() => {
+      streamMode = 'live';
+      refreshStream();
+      showToast('Switched to webcam', false);
+    });
+}
+
+function refreshStream() {
+  const img = document.getElementById('live-img');
+  img.src = '/video_feed?' + Date.now();
+}
+
+// ── Image load state ───────────────────────────────────────────
+const img = document.getElementById('live-img');
+img.onload = function() {
+  document.getElementById('no-feed').style.display = 'none';
+};
+img.onerror = function() {
+  document.getElementById('no-feed').style.display = 'flex';
+};
+
+// ── Auto-scroll ────────────────────────────────────────────────
+document.getElementById('autoscroll').addEventListener('change', function() {
+  autoScroll = this.checked;
+});
+
+// ── Toast ──────────────────────────────────────────────────────
+let toastTimer;
+function showToast(msg, isDanger) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast' + (isDanger ? ' danger-toast' : '') + ' show';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.classList.remove('show'); }, 3500);
+}
+
+// ── Utils ──────────────────────────────────────────────────────
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+</script>
+</body>
+</html>
