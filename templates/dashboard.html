@@ -747,8 +747,8 @@ function uploadVideo(input) {
       const d = JSON.parse(xhr.responseText);
       showToast('Processing: ' + d.file, false);
       streamMode = 'recorded';
-      // Reset img src to refresh the MJPEG stream
-      refreshStream();
+      // Wait 1s for pipeline to start processing the file, then reconnect stream
+      setTimeout(refreshStream, 1000);
     } else {
       showToast('Upload failed', true);
     }
@@ -769,14 +769,19 @@ function switchToWebcam() {
     .then(r => r.json())
     .then(() => {
       streamMode = 'live';
-      refreshStream();
       showToast('Switched to webcam', false);
+      // Small delay so backend switches source before we reconnect
+      setTimeout(refreshStream, 800);
     });
 }
 
 function refreshStream() {
   const img = document.getElementById('live-img');
-  img.src = '/video_feed?' + Date.now();
+  // Kill the current MJPEG connection by blanking src first
+  img.src = '';
+  setTimeout(() => {
+    img.src = '/video_feed?' + Date.now();
+  }, 200);
 }
 
 // ── Image load state ───────────────────────────────────────────

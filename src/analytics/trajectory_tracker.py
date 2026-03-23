@@ -5,16 +5,15 @@ import time
 class TrajectoryTracker:
 
     def __init__(self, roi=None, grid_size=2):
-        self.roi = roi
+        self.roi       = roi
         self.grid_size = grid_size
 
-        self.paths = defaultdict(list)
-        self.last_zone = {}
+        self.paths            = defaultdict(list)
+        self.last_zone        = {}
         self.last_change_time = {}
-        self.pending_zone = {}          # candidate zone before it's confirmed stable
-        self.pending_since = {}         # when we first saw the candidate
+        self.pending_zone     = {}
+        self.pending_since    = {}
 
-        # A zone change is accepted only after guard stays there this long (seconds)
         self.zone_stability_time = 2.5
 
     def update(self, objects):
@@ -26,43 +25,46 @@ class TrajectoryTracker:
             cy = int((y1 + y2) / 2)
 
             zone = self._get_zone(cx, cy)
-
             if zone is None:
                 continue
 
             prev_zone = self.last_zone.get(track_id)
 
-            # ── First ever detection for this track ───────────────────────
             if prev_zone is None:
-                self.last_zone[track_id] = zone
+                self.last_zone[track_id]        = zone
                 self.last_change_time[track_id] = now
                 self.paths[track_id].append(zone)
                 continue
 
-            # ── Same zone as confirmed zone → reset any pending candidate ─
             if zone == prev_zone:
                 self.pending_zone.pop(track_id, None)
                 self.pending_since.pop(track_id, None)
                 continue
 
-            # ── Different zone — start or continue tracking a candidate ───
             if self.pending_zone.get(track_id) != zone:
-                # New candidate — start the stability clock
-                self.pending_zone[track_id] = zone
+                self.pending_zone[track_id]  = zone
                 self.pending_since[track_id] = now
                 continue
 
-            # ── Same candidate long enough → accept the zone change ───────
             if now - self.pending_since[track_id] >= self.zone_stability_time:
-                self.last_zone[track_id] = zone
+                self.last_zone[track_id]        = zone
                 self.last_change_time[track_id] = now
                 self.pending_zone.pop(track_id, None)
                 self.pending_since.pop(track_id, None)
 
-                # Only append if different from last recorded zone (no consecutive dupes)
                 path = self.paths[track_id]
                 if not path or path[-1] != zone:
                     self.paths[track_id].append(zone)
+
+    def reset_track(self, track_id):
+        """Clear all state for a track_id when it is deregistered.
+        Prevents path/zone data bleeding into the next person assigned
+        the same track_id by the centroid tracker."""
+        self.paths.pop(track_id, None)
+        self.last_zone.pop(track_id, None)
+        self.last_change_time.pop(track_id, None)
+        self.pending_zone.pop(track_id, None)
+        self.pending_since.pop(track_id, None)
 
     def get_current_zone(self, track_id):
         return self.last_zone.get(track_id, None)
@@ -85,12 +87,8 @@ class TrajectoryTracker:
         width  = (rx2 - rx1) / self.grid_size
         height = (ry2 - ry1) / self.grid_size
 
-        col = int((x - rx1) / width)
-        row = int((y - ry1) / height)
-
-        # Clamp to grid bounds
-        col = min(col, self.grid_size - 1)
-        row = min(row, self.grid_size - 1)
+        col = min(int((x - rx1) / width),  self.grid_size - 1)
+        row = min(int((y - ry1) / height), self.grid_size - 1)
 
         zones = ["A", "B", "C", "D"]
         index = row * self.grid_size + col

@@ -3,19 +3,20 @@ flask_app.py  —  Web server for the Guard Monitoring Dashboard.
 
 Run with:
     python flask_app.py
-
-Routes:
-    GET  /                   → dashboard HTML
-    GET  /video_feed         → MJPEG stream
-    GET  /alerts/stream      → SSE alert stream
-    GET  /api/stats          → JSON stats
-    POST /api/upload         → upload recorded video
-    POST /api/source/webcam  → switch back to webcam
-    GET  /api/alerts/export  → download CSV or JSON
 """
 
 import sys
 import os
+
+# Set model cache BEFORE any other imports — HuggingFace reads these at import
+# time. Setting them after 'import open_clip' is too late.
+_cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model_cache")
+os.makedirs(_cache_dir, exist_ok=True)
+os.environ["HUGGINGFACE_HUB_CACHE"] = _cache_dir
+os.environ["HF_HOME"]               = _cache_dir
+os.environ["TORCH_HOME"]            = _cache_dir
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+
 # MUST be before any src/ imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
@@ -148,8 +149,19 @@ def api_upload():
         return jsonify({"error": "Invalid file"}), 400
     filename = secure_filename(f.filename)
     filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
-    f.save(filepath)
-    main_web.start(source=filepath, source_label=filename)
+
+    # Read file bytes in the request context (must happen here, not in thread)
+    file_bytes = f.read()
+
+    def save_and_start():
+        with open(filepath, "wb") as out:
+            out.write(file_bytes)
+        print(f"[upload] Saved {filename} ({len(file_bytes)//1024}KB)")
+        main_web.start(source=filepath, source_label=filename)
+
+    # Save + start pipeline in background — Flask returns immediately
+    threading.Thread(target=save_and_start, daemon=True).start()
+
     return jsonify({"ok": True, "file": filename})
 
 
