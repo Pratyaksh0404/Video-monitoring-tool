@@ -22,7 +22,7 @@ class AlertManager:
 
         # Severity mapping
         severity = "high"
-        if alert_type in ("Guard Missing", "Guard Sleeping", "Phone Usage"):
+        if alert_type in ("Guard Missing", "Guard Sleeping", "Phone Usage") or "Weapon" in alert_type or "Threat" in alert_type:
             severity = "high"
         elif alert_type in ("Guard Distracted", "Guard Idle"):
             severity = "medium"

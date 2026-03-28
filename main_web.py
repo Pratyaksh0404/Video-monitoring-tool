@@ -27,6 +27,7 @@ from analytics.inactivity import InactivityMonitor
 from analytics.behavior_engine import BehaviorEngine
 from analytics.trajectory_tracker import TrajectoryTracker
 from alerts.alert_manager import AlertManager
+from analytics.anomaly_detector import AnomalyDetector
 from video_streamer import streamer
 
 MIN_PERSON_HEIGHT = 120
@@ -209,7 +210,7 @@ class BehaviorWorker:
 
 # ── Main CV loop ───────────────────────────────────────────────────────────────
 def run(source=0, source_label="Camera 0", beh_worker=None,
-        beh_label_cache=None, beh_cache_lock=None):
+        beh_label_cache=None, beh_cache_lock=None, anomaly_det=None):
     global _stop_event
     _stop_event.clear()
 
@@ -365,6 +366,21 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                 final_state = (beh_engine.update(track_id, label)
                                if post_status == "PRESENT" else "ANALYZING")
 
+                # ── Anomaly detection ──────────────────────────────────────────
+                anomaly_label = "NORMAL"
+                anomaly_threat = None
+                if anomaly_det and anomaly_det.is_ready():
+                    # Submit crop every 8 frames — YOLOv8 Nano is fast on CPU
+                    if frame_count % 8 == 0:
+                        x1a, y1a, x2a, y2a = person_box
+                        crop = frame[max(0,y1a):y2a, max(0,x1a):x2a]
+                        anomaly_det.submit(track_id, crop)
+                    # Read latest result
+                    res = anomaly_det.get_result(track_id)
+                    if res:
+                        anomaly_label  = res["label"]
+                        anomaly_threat = res.get("threat")
+
                 # ── Trajectory ─────────────────────────────────────────────────
                 current_zone = zone_detector.get_current_zone(track_id)
 
@@ -389,11 +405,18 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                 # ── Draw overlays ──────────────────────────────────────────────
                 x1, y1, x2, y2 = person_box
                 color = (0, 255, 0)
-                if "CONFIRMED" in final_state:  color = (0, 0, 255)
-                elif "POSSIBLE" in final_state: color = (0, 165, 255)
+                if anomaly_label == "WEAPON":    color = (0, 0, 255)  # Red for weapons
+                elif anomaly_label == "THREAT":    color = (0, 0, 255)
+                elif anomaly_label == "ANOMALY": color = (0, 165, 255)
+                elif "CONFIRMED" in final_state: color = (0, 0, 255)
+                elif "POSSIBLE" in final_state:  color = (0, 165, 255)
 
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                cv2.putText(frame, f"{alert_name} | {final_state}",
+                label_text = f"{alert_name} | {final_state}"
+                if anomaly_label != "NORMAL":
+                    threat_str = anomaly_threat or anomaly_label
+                    label_text += f" | {threat_str}"
+                cv2.putText(frame, label_text,
                             (x1, max(y1-8, 12)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
                 if display_zone and display_zone != "?":
@@ -425,12 +448,30 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                         send_alert(f"distracted:{guard_id}", "Guard Distracted")
                     elif activity_status == "INACTIVE":
                         send_alert(f"idle:{guard_id}", "Guard Idle")
+                    # Anomaly alerts for known guards
+                    if anomaly_label == "WEAPON" and anomaly_threat:
+                        send_alert(f"weapon:{guard_id}:{anomaly_threat}",
+                                   f"Weapon Detected: {anomaly_threat}")
+                    elif anomaly_label == "THREAT" and anomaly_threat:
+                        send_alert(f"threat:{guard_id}:{anomaly_threat}",
+                                   f"Threat Detected: {anomaly_threat}")
+                    elif anomaly_label == "ANOMALY":
+                        send_alert(f"anomaly:{guard_id}",
+                                   "Suspicious Activity Detected")
                 else:
                     # Unknown person alert after 6s grace period
                     track_age = now - track_birth.get(track_id, now)
                     if track_age > 6.0:
                         send_alert(f"unknown:{track_id}",
                                    "Unknown Person Detected")
+                    # Weapon detection fires immediately for unknowns
+                    if anomaly_label == "WEAPON" and anomaly_threat:
+                        send_alert(f"weapon:unknown:{track_id}",
+                                   f"Weapon Detected: {anomaly_threat}")
+                    # Threat detection fires immediately for unknowns
+                    elif anomaly_label == "THREAT" and anomaly_threat:
+                        send_alert(f"threat:unknown:{track_id}",
+                                   f"Threat Detected: {anomaly_threat}")
 
             # Guard Missing — post level only
             if post_status == "ABSENT":
@@ -480,17 +521,22 @@ def _run_with_restart(source, source_label):
     beh_cache_lock  = threading.Lock()
     worker          = BehaviorWorker(beh_label_cache, beh_cache_lock)
 
+    # AnomalyDetector also loads once — shares no state with BehaviorWorker
+    anomaly_det = AnomalyDetector()
+
     while not _stop_event.is_set():
         run(source, source_label,
             beh_worker=worker,
             beh_label_cache=beh_label_cache,
-            beh_cache_lock=beh_cache_lock)
+            beh_cache_lock=beh_cache_lock,
+            anomaly_det=anomaly_det)
         if _stop_event.is_set():
             break
         print("[main_web] Restarting in 3s...")
         time.sleep(3)
 
     worker.stop()
+    anomaly_det.stop()
 
 
 def start(source=0, source_label="Camera 0"):

@@ -34,7 +34,7 @@ from werkzeug.utils import secure_filename
 
 import main_web
 from video_streamer import streamer
-from alerts.alert_manager import alert_queue   # ← src/alerts/ — same module as main_web
+from alerts.alert_manager import alert_queue
 
 
 app = Flask(__name__)
