@@ -25,6 +25,7 @@ import time
 import queue
 import threading
 import datetime
+from collections import Counter, defaultdict
 
 from flask import (
     Flask, render_template, Response,
@@ -138,6 +139,86 @@ def alerts_stream():
 @app.route("/api/stats")
 def api_stats():
     return jsonify(streamer.stats)
+
+
+@app.route("/api/analytics")
+def api_analytics():
+    """
+    Compute analytics from the in-memory alert log.
+    Returns:
+      - type_counts       : { alert_type: count, ... }
+      - severity_counts   : { high/medium/low: count }
+      - zone_counts       : { A/B/C/D: count }
+      - guard_alert_counts: { guard_name: count }
+      - guard_compliance  : { guard_name: patrol_coverage_pct }
+      - hourly_counts     : { "HH:00": count }
+      - total             : int
+    """
+    with _alert_log_lock:
+        log = list(_alert_log)
+
+    type_counts       = Counter()
+    severity_counts   = Counter({"high": 0, "medium": 0, "low": 0})
+    zone_counts       = Counter()
+    guard_alert_counts= Counter()
+    hourly_counts     = defaultdict(int)
+    # guard → set of zones seen across all Patrol alerts
+    guard_zones       = defaultdict(set)
+
+    for a in log:
+        alert_type = a.get("type", "")
+        severity   = a.get("severity", "low")
+        zone       = a.get("zone", "")
+        guard      = a.get("guard_id", "")
+        timestamp  = a.get("timestamp", "")
+
+        # ── Normalise type for grouping ──────────────────────────────────────
+        if alert_type.startswith("Patrol:"):
+            # Parse zone path to compute patrol coverage per guard
+            path = alert_type.replace("Patrol:", "").strip()
+            for z in path.replace(" ", "").split("->"):
+                if z in ("A", "B", "C", "D"):
+                    guard_zones[guard].add(z)
+            # Count patrol events under a single "Patrol" bucket
+            type_counts["Patrol"] += 1
+        elif alert_type.startswith("Weapon Detected"):
+            type_counts["Weapon Detected"] += 1
+        elif alert_type.startswith("Threat Detected"):
+            type_counts["Threat Detected"] += 1
+        else:
+            type_counts[alert_type] += 1
+
+        # ── Severity ─────────────────────────────────────────────────────────
+        severity_counts[severity] += 1
+
+        # ── Zone ─────────────────────────────────────────────────────────────
+        if zone and zone not in ("—", "-", ""):
+            zone_counts[zone] += 1
+
+        # ── Per-guard alert count (skip "Post" synthetic guard) ──────────────
+        if guard and guard not in ("Post", ""):
+            guard_alert_counts[guard] += 1
+
+        # ── Hourly bucket (timestamp is "HH:MM:SS") ──────────────────────────
+        if timestamp and len(timestamp) >= 2:
+            hour_key = timestamp[:2] + ":00"
+            hourly_counts[hour_key] += 1
+
+    # Patrol compliance: % of 4 zones visited
+    guard_compliance = {
+        g: int(len(zones) / 4 * 100)
+        for g, zones in guard_zones.items()
+    }
+
+    return jsonify({
+        "type_counts":        dict(type_counts),
+        "severity_counts":    dict(severity_counts),
+        "zone_counts":        dict(zone_counts),
+        "guard_alert_counts": dict(guard_alert_counts),
+        "guard_compliance":   guard_compliance,
+        "hourly_counts":      dict(hourly_counts),
+        "total":              len(log),
+    })
 
 
 @app.route("/api/upload", methods=["POST"])

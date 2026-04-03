@@ -6,6 +6,7 @@
 <title>Guard Monitoring System</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
   :root {
     --bg:       #0d0f12;
@@ -31,7 +32,7 @@
     color: var(--text);
     font-family: var(--sans);
     font-size: 13px;
-    overflow: hidden;
+    overflow: hidden;   /* monitor tab: no scroll */
   }
 
   /* ── Layout shell ─────────────────────────────────────────── */
@@ -39,6 +40,7 @@
     display: grid;
     grid-template-rows: 44px 60px 1fr;
     height: 100vh;
+    min-height: 0;
   }
 
   /* ── Top bar ──────────────────────────────────────────────── */
@@ -60,6 +62,7 @@
     display: flex;
     align-items: center;
     gap: 8px;
+    flex-shrink: 0;
   }
 
   .pulse-dot {
@@ -73,6 +76,34 @@
   @keyframes pulse {
     0%, 100% { opacity: 1; }
     50%       { opacity: 0.3; }
+  }
+
+  /* ── Tab nav ──────────────────────────────────────────────── */
+  .tab-nav {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    margin-left: 8px;
+  }
+
+  .tab-btn {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    padding: 5px 14px;
+    border-radius: 3px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    text-transform: uppercase;
+    transition: all 0.15s;
+  }
+  .tab-btn:hover { color: var(--text); border-color: var(--border2); }
+  .tab-btn.active {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: rgba(59,130,246,0.08);
   }
 
   .topbar-right {
@@ -484,6 +515,273 @@
   }
   .toast.danger-toast { border-left-color: var(--danger); }
   .toast.show { opacity: 1; transform: translateY(0); }
+
+  /* ═══════════════════════════════════════════════════════════
+     ANALYTICS TAB
+  ══════════════════════════════════════════════════════════ */
+
+  .analytics-panel {
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 14px 16px 20px;
+    background: var(--bg);
+    scrollbar-width: thin;
+    scrollbar-color: var(--border2) transparent;
+    /* Natural block flow — no flex column trying to fit into viewport */
+  }
+  .analytics-panel::-webkit-scrollbar { width: 4px; }
+  .analytics-panel::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+
+  .an-refresh-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+  }
+
+  /* KPI cards row */
+  .an-kpi-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+
+  .an-kpi {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 14px 16px;
+  }
+
+  .an-kpi-label {
+    font-family: var(--mono);
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+
+  .an-kpi-val {
+    font-family: var(--mono);
+    font-size: 28px;
+    font-weight: 500;
+    color: var(--text);
+    line-height: 1;
+  }
+  .an-kpi-val.danger { color: var(--danger); }
+  .an-kpi-val.ok     { color: var(--ok); }
+  .an-kpi-val.accent { color: var(--accent); }
+  .an-kpi-sub {
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--muted);
+    margin-top: 4px;
+  }
+
+  /* Chart rows */
+  .an-row {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+
+  .an-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 14px 16px;
+    min-width: 0;
+    flex: 1;
+  }
+  .an-card.wide  { flex: 2; }
+  .an-card.full  { flex: 1; }
+
+  .an-card-title {
+    font-family: var(--mono);
+    font-size: 9px;
+    letter-spacing: 0.15em;
+    color: var(--muted);
+    text-transform: uppercase;
+    margin-bottom: 12px;
+    flex-shrink: 0;
+  }
+
+  .an-chart-wrap {
+    position: relative;
+    /* Explicit height — Chart.js requires a concrete parent height
+       when maintainAspectRatio:false. flex:1 breaks at high zoom. */
+    height: 170px;
+    width: 100%;
+  }
+
+  /* Hourly chart needs a bit less vertical space */
+  .an-chart-wrap.hourly { height: 110px; }
+
+  /* Zone heatmap */
+  .zone-heatmap {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+    gap: 8px;
+    height: 170px;   /* matches chart-wrap height for visual alignment */
+    width: 100%;
+  }
+
+  .zh-zone {
+    border-radius: 4px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    background: rgba(59,130,246,0.05);
+    border: 1px solid var(--border);
+    transition: background 0.6s, border-color 0.6s;
+    cursor: default;
+  }
+
+  .zh-label {
+    font-family: var(--mono);
+    font-size: 20px;
+    font-weight: 500;
+    color: rgba(205,211,219,0.5);
+  }
+
+  .zh-count {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--text);
+  }
+
+  .zh-sub {
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--muted);
+  }
+
+  /* Guard performance table */
+  .guard-table-wrap {
+    max-height: 170px;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border2) transparent;
+  }
+  .guard-table-wrap::-webkit-scrollbar { width: 3px; }
+  .guard-table-wrap::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+
+  .guard-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+
+  .guard-table th {
+    text-align: left;
+    color: var(--muted);
+    font-size: 9px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 0 8px 8px 0;
+    border-bottom: 1px solid var(--border);
+    font-weight: 400;
+  }
+
+  .guard-table td {
+    padding: 8px 8px 8px 0;
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+    vertical-align: middle;
+  }
+
+  .guard-table tr:last-child td { border-bottom: none; }
+
+  .guard-table tbody tr:hover td { color: #fff; }
+
+  .compliance-wrap {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+
+  .compliance-bg {
+    flex: 1;
+    height: 4px;
+    background: var(--border2);
+    border-radius: 2px;
+    overflow: hidden;
+    min-width: 60px;
+  }
+
+  .compliance-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.6s ease;
+  }
+  .compliance-fill.ok     { background: var(--ok); }
+  .compliance-fill.warn   { background: var(--warn); }
+  .compliance-fill.danger { background: var(--danger); }
+
+  .compliance-pct {
+    font-size: 10px;
+    color: var(--muted);
+    min-width: 30px;
+    text-align: right;
+  }
+
+  .status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 10px;
+  }
+
+  .status-dot {
+    display: inline-block;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .status-dot.ok     { background: var(--ok); }
+  .status-dot.warn   { background: var(--warn); }
+  .status-dot.danger { background: var(--danger); }
+
+  .no-data-msg {
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 11px;
+    text-align: center;
+    padding: 24px 0;
+  }
+
+  .an-section-label {
+    font-family: var(--mono);
+    font-size: 9px;
+    letter-spacing: 0.15em;
+    color: var(--muted);
+    text-transform: uppercase;
+  }
+
+  .an-refresh-hint {
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--border2);
+  }
+
+  .an-refresh-btn {
+    font-family: var(--mono);
+    font-size: 10px;
+    padding: 3px 10px;
+    border-radius: 3px;
+    border: 1px solid var(--border2);
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .an-refresh-btn:hover { border-color: var(--accent); color: var(--accent); }
 </style>
 </head>
 <body>
@@ -496,6 +794,15 @@
       <div class="pulse-dot" id="pulse-dot"></div>
       GMS
     </div>
+
+    <!-- Tab navigation -->
+    <nav class="tab-nav">
+      <button class="tab-btn active" id="tab-btn-monitor"
+              onclick="switchTab('monitor', this)">Monitor</button>
+      <button class="tab-btn" id="tab-btn-analytics"
+              onclick="switchTab('analytics', this)">Analytics</button>
+    </nav>
+
     <div class="cam-label" id="cam-label">Camera 0</div>
     <div class="topbar-right">
       <span class="mode-badge" id="mode-badge">LIVE</span>
@@ -522,8 +829,10 @@
     </div>
   </div>
 
-  <!-- ── Panels ─────────────────────────────────────────────── -->
-  <div class="panels">
+  <!-- ═══════════════════════════════════════════════════════
+       MONITOR TAB (default visible)
+  ═══════════════════════════════════════════════════════ -->
+  <div class="panels" id="view-monitor">
 
     <!-- Video panel -->
     <div class="video-panel">
@@ -598,19 +907,138 @@
       </div>
     </div>
 
-  </div><!-- /panels -->
+  </div><!-- /view-monitor -->
+
+
+  <!-- ═══════════════════════════════════════════════════════
+       ANALYTICS TAB (hidden by default)
+  ═══════════════════════════════════════════════════════ -->
+  <div class="analytics-panel" id="view-analytics" style="display:none">
+
+    <!-- Header row -->
+    <div class="an-refresh-row">
+      <span class="an-section-label">Session Statistics</span>
+      <div style="display:flex; align-items:center; gap:10px;">
+        <span class="an-refresh-hint" id="an-last-updated"></span>
+        <button class="an-refresh-btn" onclick="loadAnalytics()">↻ Refresh</button>
+      </div>
+    </div>
+
+    <!-- KPI cards -->
+    <div class="an-kpi-row">
+      <div class="an-kpi">
+        <div class="an-kpi-label">Total Alerts</div>
+        <div class="an-kpi-val" id="an-total">—</div>
+        <div class="an-kpi-sub">this session</div>
+      </div>
+      <div class="an-kpi">
+        <div class="an-kpi-label">High Severity</div>
+        <div class="an-kpi-val danger" id="an-high-pct">—</div>
+        <div class="an-kpi-sub" id="an-high-abs">of total alerts</div>
+      </div>
+      <div class="an-kpi">
+        <div class="an-kpi-label">Top Alert Zone</div>
+        <div class="an-kpi-val accent" id="an-top-zone">—</div>
+        <div class="an-kpi-sub" id="an-top-zone-count">most incidents</div>
+      </div>
+      <div class="an-kpi">
+        <div class="an-kpi-label">Guards Tracked</div>
+        <div class="an-kpi-val ok" id="an-guards">—</div>
+        <div class="an-kpi-sub">with face ID</div>
+      </div>
+    </div>
+
+    <!-- Row 1: Alert Types bar + Severity donut -->
+    <div class="an-row">
+      <div class="an-card wide">
+        <div class="an-card-title">Alert Type Breakdown</div>
+        <div class="an-chart-wrap">
+          <canvas id="chart-types"></canvas>
+        </div>
+      </div>
+      <div class="an-card" style="min-width:180px; max-width:220px;">
+        <div class="an-card-title">Severity Distribution</div>
+        <div class="an-chart-wrap">
+          <canvas id="chart-severity"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- Row 2: Hourly timeline -->
+    <div class="an-row">
+      <div class="an-card full">
+        <div class="an-card-title">Hourly Alert Distribution</div>
+        <div class="an-chart-wrap hourly">
+          <canvas id="chart-hourly"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- Row 3: Zone heatmap + Guard table -->
+    <div class="an-row">
+      <div class="an-card" style="min-width:200px; max-width:250px;">
+        <div class="an-card-title">Zone Activity Heatmap</div>
+        <div class="zone-heatmap">
+          <div class="zh-zone" id="zh-A">
+            <span class="zh-label">A</span>
+            <span class="zh-count" id="zh-A-count">0</span>
+            <span class="zh-sub">alerts</span>
+          </div>
+          <div class="zh-zone" id="zh-B">
+            <span class="zh-label">B</span>
+            <span class="zh-count" id="zh-B-count">0</span>
+            <span class="zh-sub">alerts</span>
+          </div>
+          <div class="zh-zone" id="zh-C">
+            <span class="zh-label">C</span>
+            <span class="zh-count" id="zh-C-count">0</span>
+            <span class="zh-sub">alerts</span>
+          </div>
+          <div class="zh-zone" id="zh-D">
+            <span class="zh-label">D</span>
+            <span class="zh-count" id="zh-D-count">0</span>
+            <span class="zh-sub">alerts</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="an-card wide">
+        <div class="an-card-title">Guard Performance</div>
+        <div class="guard-table-wrap">
+          <table class="guard-table" id="guard-table">
+            <thead>
+              <tr>
+                <th>Guard ID</th>
+                <th>Alerts</th>
+                <th>Patrol Coverage</th>
+                <th>Rating</th>
+              </tr>
+            </thead>
+            <tbody id="guard-tbody">
+              <tr><td colspan="4" class="no-data-msg">No guard data yet</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /view-analytics -->
+
 </div><!-- /shell -->
 
 <!-- Toast -->
 <div class="toast" id="toast"></div>
 
 <script>
-// ── State ──────────────────────────────────────────────────────
-let alertCount = 0;
+// ══════════════════════════════════════════════════════════
+//  MONITOR TAB — existing logic (unchanged)
+// ══════════════════════════════════════════════════════════
+
+let alertCount     = 0;
 let violationCount = 0;
-let currentFilter = 'all';
-let autoScroll = true;
-let streamMode = 'live';   // 'live' | 'recorded'
+let currentFilter  = 'all';
+let autoScroll     = true;
+let streamMode     = 'live';
 
 // ── SSE — alert stream ─────────────────────────────────────────
 const evtSource = new EventSource('/alerts/stream');
@@ -671,9 +1099,8 @@ function appendAlert(a, isNew) {
   applyFilter(item, currentFilter);
 
   const list = document.getElementById('log-list');
-  list.prepend(item);   // newest at top
+  list.prepend(item);
 
-  // Keep DOM manageable
   const items = list.querySelectorAll('.log-item');
   if (items.length > 200) items[items.length - 1].remove();
 
@@ -704,17 +1131,13 @@ function setFilter(key, el) {
   currentFilter = key;
   document.querySelectorAll('.filter-chip').forEach(c => c.classList.remove('active'));
   el.classList.add('active');
-
   document.querySelectorAll('.log-item').forEach(item => applyFilter(item, key));
 }
 
 function applyFilter(item, filter) {
-  if (filter === 'all') {
-    item.classList.remove('hidden');
-    return;
-  }
+  if (filter === 'all') { item.classList.remove('hidden'); return; }
   const terms = filterMap[filter] || [];
-  const type = item.dataset.type || '';
+  const type  = item.dataset.type || '';
   const matches = terms.some(t => type.includes(t));
   item.classList.toggle('hidden', !matches);
 }
@@ -747,7 +1170,6 @@ function uploadVideo(input) {
       const d = JSON.parse(xhr.responseText);
       showToast('Processing: ' + d.file, false);
       streamMode = 'recorded';
-      // Wait 1s for pipeline to start processing the file, then reconnect stream
       setTimeout(refreshStream, 1000);
     } else {
       showToast('Upload failed', true);
@@ -770,28 +1192,20 @@ function switchToWebcam() {
     .then(() => {
       streamMode = 'live';
       showToast('Switched to webcam', false);
-      // Small delay so backend switches source before we reconnect
       setTimeout(refreshStream, 800);
     });
 }
 
 function refreshStream() {
   const img = document.getElementById('live-img');
-  // Kill the current MJPEG connection by blanking src first
   img.src = '';
-  setTimeout(() => {
-    img.src = '/video_feed?' + Date.now();
-  }, 200);
+  setTimeout(() => { img.src = '/video_feed?' + Date.now(); }, 200);
 }
 
 // ── Image load state ───────────────────────────────────────────
-const img = document.getElementById('live-img');
-img.onload = function() {
-  document.getElementById('no-feed').style.display = 'none';
-};
-img.onerror = function() {
-  document.getElementById('no-feed').style.display = 'flex';
-};
+const liveImg = document.getElementById('live-img');
+liveImg.onload  = function() { document.getElementById('no-feed').style.display = 'none'; };
+liveImg.onerror = function() { document.getElementById('no-feed').style.display = 'flex'; };
 
 // ── Auto-scroll ────────────────────────────────────────────────
 document.getElementById('autoscroll').addEventListener('change', function() {
@@ -813,6 +1227,306 @@ function escHtml(s) {
   return String(s)
     .replace(/&/g,'&amp;').replace(/</g,'&lt;')
     .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+
+// ══════════════════════════════════════════════════════════
+//  ANALYTICS TAB
+// ══════════════════════════════════════════════════════════
+
+let activeTab        = 'monitor';
+let analyticsCharts  = {};
+let analyticsTimer   = null;
+
+// ── Tab switching ──────────────────────────────────────────────
+function switchTab(tab, btn) {
+  activeTab = tab;
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+
+  const isAnalytics = tab === 'analytics';
+  document.getElementById('view-monitor').style.display   = isAnalytics ? 'none' : '';
+  document.getElementById('view-analytics').style.display = isAnalytics ? ''     : 'none';
+
+  // Monitor tab: body locked (MJPEG feed fills the frame)
+  // Analytics tab: body scrollable so content is reachable at any zoom
+  document.documentElement.style.overflow = isAnalytics ? 'auto' : 'hidden';
+  document.body.style.overflow            = isAnalytics ? 'auto' : 'hidden';
+
+  if (isAnalytics) {
+    loadAnalytics();
+    if (!analyticsTimer) {
+      analyticsTimer = setInterval(loadAnalytics, 15000);
+    }
+  } else {
+    clearInterval(analyticsTimer);
+    analyticsTimer = null;
+  }
+}
+
+// ── Fetch + render analytics ───────────────────────────────────
+function loadAnalytics() {
+  fetch('/api/analytics')
+    .then(r => r.json())
+    .then(renderAnalytics)
+    .catch(err => console.warn('[analytics] fetch error:', err));
+}
+
+function renderAnalytics(d) {
+  const now = new Date();
+  document.getElementById('an-last-updated').textContent =
+    'Updated ' + now.toLocaleTimeString();
+
+  const total = d.total || 0;
+
+  // ── KPI cards ────────────────────────────────────────────────
+  document.getElementById('an-total').textContent = total;
+
+  const highCount = (d.severity_counts && d.severity_counts.high) || 0;
+  const highPct   = total > 0 ? Math.round(highCount / total * 100) : 0;
+  document.getElementById('an-high-pct').textContent  = highPct + '%';
+  document.getElementById('an-high-abs').textContent  = highCount + ' high-sev alerts';
+
+  const zoneCounts = d.zone_counts || {};
+  const topZoneEntry = Object.entries(zoneCounts).sort((a,b) => b[1]-a[1])[0];
+  document.getElementById('an-top-zone').textContent       = topZoneEntry ? topZoneEntry[0] : '—';
+  document.getElementById('an-top-zone-count').textContent =
+    topZoneEntry ? topZoneEntry[1] + ' alerts' : 'no zone data';
+
+  const namedGuards = Object.keys(d.guard_alert_counts || {}).filter(g => g !== 'Post');
+  document.getElementById('an-guards').textContent = namedGuards.length || '—';
+
+  // ── Zone heatmap ─────────────────────────────────────────────
+  const maxZoneVal = Math.max(1, ...Object.values(zoneCounts));
+  ['A', 'B', 'C', 'D'].forEach(z => {
+    const count     = zoneCounts[z] || 0;
+    const intensity = count / maxZoneVal;           // 0.0 → 1.0
+    const el        = document.getElementById('zh-' + z);
+    el.style.background   = `rgba(59,130,246,${(0.04 + intensity * 0.46).toFixed(2)})`;
+    el.style.borderColor  = intensity > 0.2
+      ? `rgba(59,130,246,${(intensity * 0.9).toFixed(2)})`
+      : 'var(--border)';
+    document.getElementById('zh-' + z + '-count').textContent = count;
+  });
+
+  // ── Guard performance table ───────────────────────────────────
+  const alertCounts  = d.guard_alert_counts || {};
+  const compliance   = d.guard_compliance   || {};
+  const guards = Object.keys(alertCounts).filter(g => g !== 'Post');
+  const tbody  = document.getElementById('guard-tbody');
+
+  if (guards.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="4" class="no-data-msg">No named guards detected yet</td></tr>';
+  } else {
+    tbody.innerHTML = guards
+      .sort((a, b) => (alertCounts[b] || 0) - (alertCounts[a] || 0))
+      .map(g => {
+        const alerts = alertCounts[g] || 0;
+        const cov    = compliance[g]  || 0;
+        const cls    = cov >= 75 ? 'ok' : cov >= 50 ? 'warn' : 'danger';
+        const label  = cov >= 75 ? 'Good'  : cov >= 50 ? 'Fair' : 'Low';
+        return `
+          <tr>
+            <td>${escHtml(g)}</td>
+            <td>${alerts}</td>
+            <td>
+              <div class="compliance-wrap">
+                <div class="compliance-bg">
+                  <div class="compliance-fill ${cls}" style="width:${cov}%"></div>
+                </div>
+                <span class="compliance-pct">${cov}%</span>
+              </div>
+            </td>
+            <td>
+              <span class="status-pill">
+                <span class="status-dot ${cls}"></span>${label}
+              </span>
+            </td>
+          </tr>`;
+      }).join('');
+  }
+
+  // ── Charts ───────────────────────────────────────────────────
+  renderTypesChart(d.type_counts || {});
+  renderSeverityChart(d.severity_counts || {});
+  renderHourlyChart(d.hourly_counts || {});
+}
+
+// ── Chart.js global defaults ───────────────────────────────────
+Chart.defaults.color         = '#5a6474';
+Chart.defaults.borderColor   = '#252a33';
+Chart.defaults.font.family   = "'IBM Plex Mono', monospace";
+Chart.defaults.font.size     = 10;
+
+function destroyChart(key) {
+  if (analyticsCharts[key]) {
+    analyticsCharts[key].destroy();
+    analyticsCharts[key] = null;
+  }
+}
+
+// ── Alert Types horizontal bar chart ──────────────────────────
+function renderTypesChart(typeCounts) {
+  destroyChart('types');
+
+  // Exclude patrol (too many entries), sort by count, cap at top 8
+  const entries = Object.entries(typeCounts)
+    .filter(([k]) => k !== 'Patrol')
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 8);
+
+  if (!entries.length) {
+    const ctx = document.getElementById('chart-types').getContext('2d');
+    ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+    return;
+  }
+
+  const colors = entries.map(([k]) => {
+    const kl = k.toLowerCase();
+    if (kl.includes('missing') || kl.includes('weapon') || kl.includes('sleeping') || kl.includes('threat'))
+      return 'rgba(239,68,68,0.75)';
+    if (kl.includes('idle') || kl.includes('distracted') || kl.includes('unknown'))
+      return 'rgba(245,158,11,0.75)';
+    return 'rgba(59,130,246,0.75)';
+  });
+
+  const ctx = document.getElementById('chart-types').getContext('2d');
+  analyticsCharts['types'] = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: entries.map(([k]) => k),
+      datasets: [{
+        data: entries.map(([, v]) => v),
+        backgroundColor: colors,
+        borderRadius: 2,
+        borderWidth: 0,
+      }]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { callbacks: {
+        label: ctx => ' ' + ctx.parsed.x + ' alerts'
+      }}},
+      scales: {
+        x: {
+          grid: { color: 'rgba(37,42,51,0.8)' },
+          ticks: { color: '#5a6474', stepSize: 1 },
+          border: { color: '#252a33' },
+        },
+        y: {
+          grid: { display: false },
+          ticks: { color: '#cdd3db', font: { size: 10 } },
+          border: { color: '#252a33' },
+        }
+      }
+    }
+  });
+}
+
+// ── Severity doughnut chart ────────────────────────────────────
+function renderSeverityChart(sevCounts) {
+  destroyChart('severity');
+
+  const high   = sevCounts.high   || 0;
+  const medium = sevCounts.medium || 0;
+  const low    = sevCounts.low    || 0;
+  if (high + medium + low === 0) return;
+
+  const ctx = document.getElementById('chart-severity').getContext('2d');
+  analyticsCharts['severity'] = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels: ['High', 'Medium', 'Low'],
+      datasets: [{
+        data: [high, medium, low],
+        backgroundColor: [
+          'rgba(239,68,68,0.85)',
+          'rgba(245,158,11,0.85)',
+          'rgba(34,197,94,0.85)',
+        ],
+        borderWidth: 0,
+        hoverOffset: 6,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      cutout: '62%',
+      plugins: {
+        legend: {
+          position: 'bottom',
+          labels: {
+            padding: 10,
+            boxWidth: 10,
+            color: '#cdd3db',
+            font: { size: 10 },
+          }
+        },
+        tooltip: { callbacks: {
+          label: ctx => ' ' + ctx.label + ': ' + ctx.parsed + ' alerts'
+        }}
+      }
+    }
+  });
+}
+
+// ── Hourly distribution bar chart ─────────────────────────────
+function renderHourlyChart(hourlyCounts) {
+  destroyChart('hourly');
+
+  const hours  = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0') + ':00');
+  const counts = hours.map(h => hourlyCounts[h] || 0);
+
+  if (counts.every(c => c === 0)) return;
+
+  // Highlight bars with alerts vs empty
+  const bgColors = counts.map(c =>
+    c > 0 ? 'rgba(59,130,246,0.65)' : 'rgba(59,130,246,0.1)'
+  );
+  const borderColors = counts.map(c =>
+    c > 0 ? 'rgba(59,130,246,1)' : 'rgba(59,130,246,0.2)'
+  );
+
+  const ctx = document.getElementById('chart-hourly').getContext('2d');
+  analyticsCharts['hourly'] = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: hours.map(h => h.slice(0, 2) + 'h'),
+      datasets: [{
+        label: 'Alerts',
+        data: counts,
+        backgroundColor: bgColors,
+        borderColor: borderColors,
+        borderWidth: 1,
+        borderRadius: 2,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: {
+          label: ctx => ' ' + ctx.parsed.y + ' alert' + (ctx.parsed.y !== 1 ? 's' : '')
+        }}
+      },
+      scales: {
+        x: {
+          grid: { display: false },
+          ticks: { color: '#5a6474', maxRotation: 0, font: { size: 9 } },
+          border: { color: '#252a33' },
+        },
+        y: {
+          grid: { color: 'rgba(37,42,51,0.8)' },
+          ticks: { color: '#5a6474', stepSize: 1, precision: 0 },
+          border: { color: '#252a33' },
+          min: 0,
+        }
+      }
+    }
+  });
 }
 </script>
 </body>
