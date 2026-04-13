@@ -1,89 +1,115 @@
 """
 anomaly_detector.py
 ───────────────────
-Real-time threat and anomaly detection using two pre-trained YOLOv8 models
-from HuggingFace. No training required. CPU-friendly.
+Weapon detection + best-effort fire/smoke detection.
 
-Models used:
-  1. Subh775/Threat-Detection-YOLOv8n
-     → Detects: Gun (96.7%), Grenade (93.1%), Knife, other weapons
-     → ~2-5ms per frame on CPU (YOLOv8 Nano)
+Fire model strategy (REVISED)
+──────────────────────────────
+HuggingFace access fails on this network (all repos return 404/private).
+We now check for a LOCAL fire model first before trying any downloads.
 
+To enable fire detection:
+  1. Download any YOLOv8 fire/smoke model manually (e.g. from Roboflow,
+     GitHub releases, or any public source)
+  2. Rename it to  fire_model.pt
+  3. Place it in:  model_cache/yolo_threat/fire_model.pt
+  4. Restart the app — fire detection will enable automatically.
 
-Usage in main_web.py / main.py:
-    detector = AnomalyDetector()
-    detector.submit(track_id, frame_crop)
-    result = detector.get_result(track_id)
-    # result = {"label": str, "is_alert": bool, "threat": str|None}
+Recommended free models to try:
+  - https://huggingface.co/Liang44/fire-detection/resolve/main/best.pt
+    (download in browser, rename to fire_model.pt)
+  - Any YOLOv8n/s trained on fire/smoke dataset from Roboflow Universe
+
+The HuggingFace download attempts are kept as fallback but will skip
+quickly when network is unavailable (timeout added).
 """
 
 import os
-import sys
+import shutil
 import threading
 import queue
 import time
-import numpy as np
-import cv2
 
-# ── Config ────────────────────────────────────────────────────────────────────
-THREAT_MODEL_REPO   = "Subh775/Threat-Detection-YOLOv8n"
-FIGHT_MODEL_REPO    = "Musawer14/fight_detection_yolov8"
-THREAT_MODEL_FILE   = "weights/best.pt"
-FIGHT_MODEL_FILE    = "weights/best.pt"
+WEAPON_MODEL_REPO = "Subh775/Threat-Detection-YOLOv8n"
+WEAPON_MODEL_FILE = "weights/best.pt"
+WEAPON_CONFIDENCE = 0.75
+WEAPON_EXCLUDED   = {"grenade", "Grenade", "bomb", "Bomb",
+                     "explosion", "Explosion"}
 
-THREAT_CONFIDENCE   = 0.75   # min confidence to fire weapon alert
-FIGHT_CONFIDENCE    = 0.75   # min confidence to fire fight alert
+FIRE_CONFIDENCE   = 0.50   # raised from 0.45 for fewer false positives
+FIRE_VALID_CLASSES = {"fire", "Fire", "smoke", "Smoke",
+                      "flames", "Flames", "wildfire", "Wildfire"}
+FIRE_REJECT_CLASSES = {"gun", "Gun", "knife", "Knife",
+                       "grenade", "Grenade", "explosion", "Explosion"}
 
-# Set to False to disable fight detection (if model unavailable)
-ENABLE_FIGHT_DETECTION = False
+# LOCAL fire model path — check this FIRST before any downloads
+LOCAL_FIRE_MODEL_NAME = "fire_model.pt"
 
-# Cache downloaded weights here
-_HERE       = os.path.dirname(os.path.abspath(__file__))
-_CACHE_DIR  = os.path.join(_HERE, "..", "..", "model_cache", "yolo_threat")
+# Ordered list of (repo_id, filename) to try for fire detection
+# These are kept as fallback but will fail fast on blocked networks
+FIRE_MODEL_CANDIDATES = [
+    ("arnabdhar/YOLOv8-Fire-Detection",
+     "runs/detect/train/weights/best.pt"),
+    ("AndreyGermanov/yolov8_obb_fire_smoke",
+     "best.pt"),
+    ("keremberke/yolov8s-fire-smoke-detection",
+     "best.pt"),
+]
+
+_HERE      = os.path.dirname(os.path.abspath(__file__))
+_CACHE_DIR = os.path.join(_HERE, "..", "..", "model_cache", "yolo_threat")
+
+
+def _purge_stale_subdirs():
+    """Remove leftover hf_hub_download subdirectories that cause cache collisions."""
+    for d in ("weights", "runs", "_tmp_download"):
+        p = os.path.join(_CACHE_DIR, d)
+        if os.path.isdir(p):
+            shutil.rmtree(p, ignore_errors=True)
 
 
 class AnomalyDetector:
-    """
-    Background thread running two YOLOv8 models:
-      - Weapon detector (gun, knife, grenade)
-      - Fight detector (violence vs normal)
-
-    submit() is non-blocking. get_result() returns latest cached result.
-    """
 
     def __init__(self):
-        self._q          = queue.Queue(maxsize=8)
-        self._results    = {}   # track_id → result dict
-        self._lock       = threading.Lock()
-        self._stopped    = False
-        self._ready      = False
-        self._threat_model = None
-        self._fight_model  = None
+        self._weapon_q    = queue.Queue(maxsize=8)
+        self._results     = {}
+        self._fire_q      = queue.Queue(maxsize=4)
+        self._fire_result = None
+        self._lock        = threading.Lock()
+        self._stopped     = False
+        self._ready       = False
+        self._fire_ready  = False
+        self._weapon_model = None
+        self._fire_model   = None
 
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
 
+    # ── Public API ────────────────────────────────────────────────────────────
+
     def submit(self, track_id, frame_crop):
-        """Submit a BGR crop for analysis. Non-blocking, drops if queue full."""
         if not self._ready or frame_crop is None or frame_crop.size == 0:
             return
         try:
-            self._q.put_nowait((track_id, frame_crop.copy()))
+            self._weapon_q.put_nowait((track_id, frame_crop.copy()))
         except queue.Full:
             pass
 
     def get_result(self, track_id):
-        """
-        Returns latest result for this track or None.
-        {
-          "label":    "NORMAL" | "WEAPON" | "FIGHT",
-          "threat":   "Gun" | "Knife" | "Fight" | None,
-          "score":    float,
-          "is_alert": bool,
-        }
-        """
         with self._lock:
             return self._results.get(track_id)
+
+    def submit_frame(self, frame):
+        if not self._fire_ready or frame is None or frame.size == 0:
+            return
+        try:
+            self._fire_q.put_nowait(frame.copy())
+        except queue.Full:
+            pass
+
+    def get_fire_result(self):
+        with self._lock:
+            return self._fire_result
 
     def is_ready(self):
         return self._ready
@@ -91,139 +117,195 @@ class AnomalyDetector:
     def stop(self):
         self._stopped = True
 
-    # ── Internal ──────────────────────────────────────────────────────────────
+    # ── Model loading ─────────────────────────────────────────────────────────
 
-    def _download_model(self, repo_id, filename):
-        """Download model weights from HuggingFace hub to local cache."""
+    def _flat_path(self, repo_id, filename):
         os.makedirs(_CACHE_DIR, exist_ok=True)
-        local_name = repo_id.replace("/", "_") + "_" + filename.replace("/", "_")
-        local_path = os.path.join(_CACHE_DIR, local_name)
+        safe = repo_id.replace("/", "_") + "__" + filename.replace("/", "_")
+        return os.path.join(_CACHE_DIR, safe)
 
-        if os.path.exists(local_path):
-            print(f"[AnomalyDetector] Using cached: {local_name}")
-            return local_path
-
-        print(f"[AnomalyDetector] Downloading {repo_id}...")
+    def _try_hf_download(self, repo_id, filename):
+        local = self._flat_path(repo_id, filename)
+        if os.path.exists(local):
+            print(f"[AnomalyDetector] Cache hit: {os.path.basename(local)}")
+            return local
+        print(f"[AnomalyDetector] Trying HF: {repo_id}/{filename}")
         try:
             from huggingface_hub import hf_hub_download
-            path = hf_hub_download(
-                repo_id=repo_id,
-                filename=filename,
-                local_dir=_CACHE_DIR,
-                local_dir_use_symlinks=False,
-            )
-            # Copy to flat name for easy caching
-            import shutil
-            shutil.copy(path, local_path)
-            return local_path
+            tmp = os.path.join(_CACHE_DIR, "_tmp")
+            os.makedirs(tmp, exist_ok=True)
+            path = hf_hub_download(repo_id=repo_id, filename=filename,
+                                   local_dir=tmp, local_dir_use_symlinks=False)
+            shutil.copy(path, local)
+            shutil.rmtree(tmp, ignore_errors=True)
+            print(f"[AnomalyDetector] Downloaded: {os.path.basename(local)}")
+            return local
         except Exception as e:
-            print(f"[AnomalyDetector] Download failed for {repo_id}: {e}")
+            print(f"[AnomalyDetector] HF failed ({repo_id}): {type(e).__name__}")
             return None
 
+    def _is_valid_fire_model(self, model):
+        """Returns True if model has fire/smoke classes, False if it's a weapon model."""
+        names = list(model.names.values())
+        names_lower = {n.lower() for n in names}
+        is_weapon = names_lower & {c.lower() for c in FIRE_REJECT_CLASSES}
+        is_fire   = names_lower & {c.lower() for c in FIRE_VALID_CLASSES}
+        if is_weapon and not is_fire:
+            print(f"[AnomalyDetector] ✗ Rejected (weapon model classes): {names}")
+            return False
+        return True
+
+    def _try_load_local_fire_model(self):
+        """
+        Check if user has manually placed a fire model in model_cache/yolo_threat/.
+        This is the recommended path since HuggingFace is blocked.
+        """
+        os.makedirs(_CACHE_DIR, exist_ok=True)
+        local_path = os.path.join(_CACHE_DIR, LOCAL_FIRE_MODEL_NAME)
+        if not os.path.exists(local_path):
+            return False
+
+        print(f"[AnomalyDetector] Found local fire model: {LOCAL_FIRE_MODEL_NAME}")
+        try:
+            from ultralytics import YOLO
+            m = YOLO(local_path)
+            m.overrides["verbose"] = False
+            if self._is_valid_fire_model(m):
+                self._fire_model  = m
+                self._fire_ready  = True
+                print(f"[AnomalyDetector] ✓ Fire detector ready (local). "
+                      f"Classes: {list(m.names.values())}")
+                return True
+            else:
+                print(f"[AnomalyDetector] ✗ Local fire model rejected "
+                      f"(wrong classes). Rename correct model to fire_model.pt")
+                return False
+        except Exception as e:
+            print(f"[AnomalyDetector] ✗ Local fire model load failed: {e}")
+            return False
+
     def _load_models(self):
+        _purge_stale_subdirs()
+
         try:
             from ultralytics import YOLO
 
-            # ── Weapon detection model ─────────────────────────────────────────
-            threat_path = self._download_model(
-                THREAT_MODEL_REPO, THREAT_MODEL_FILE)
-            if threat_path:
-                self._threat_model = YOLO(threat_path)
-                self._threat_model.overrides["verbose"] = False
-                print("[AnomalyDetector] Weapon detector ready.")
-            else:
-                print("[AnomalyDetector] Weapon model unavailable — skipping.")
-
-            # ── Fight detection model ──────────────────────────────────────────
-            if ENABLE_FIGHT_DETECTION:
-                fight_path = self._download_model(
-                    FIGHT_MODEL_REPO, FIGHT_MODEL_FILE)
-                if fight_path:
-                    self._fight_model = YOLO(fight_path)
-                    self._fight_model.overrides["verbose"] = False
-                    print("[AnomalyDetector] Fight detector ready.")
-                else:
-                    print("[AnomalyDetector] Fight model unavailable — skipping.")
-            else:
-                print("[AnomalyDetector] Fight detection disabled (ENABLE_FIGHT_DETECTION=False)")
-
-            if self._threat_model or self._fight_model:
+            # ── Weapon model ──────────────────────────────────────────────────
+            path = self._try_hf_download(WEAPON_MODEL_REPO, WEAPON_MODEL_FILE)
+            if path:
+                self._weapon_model = YOLO(path)
+                self._weapon_model.overrides["verbose"] = False
+                names  = list(self._weapon_model.names.values())
+                active = [n for n in names if n not in WEAPON_EXCLUDED]
+                print(f"[AnomalyDetector] ✓ Weapon detector ready. Active: {active}")
                 self._ready = True
-                print("[AnomalyDetector] Anomaly detection active.")
             else:
-                print("[AnomalyDetector] No models loaded — "
-                      "install huggingface_hub: pip install huggingface_hub")
+                print("[AnomalyDetector] ✗ Weapon model unavailable.")
+
+            # ── Fire model — check local file FIRST ───────────────────────────
+            fire_loaded = self._try_load_local_fire_model()
+
+            # ── Fire model — try HuggingFace candidates (fallback) ────────────
+            if not fire_loaded:
+                for repo_id, filename in FIRE_MODEL_CANDIDATES:
+                    path = self._try_hf_download(repo_id, filename)
+                    if path:
+                        try:
+                            m = YOLO(path)
+                            m.overrides["verbose"] = False
+                            if self._is_valid_fire_model(m):
+                                self._fire_model  = m
+                                self._fire_ready  = True
+                                fire_loaded       = True
+                                print(f"[AnomalyDetector] ✓ Fire detector ready "
+                                      f"({repo_id}). Classes: "
+                                      f"{list(m.names.values())}")
+                                break
+                        except Exception as e:
+                            print(f"[AnomalyDetector] Load failed ({repo_id}): {e}")
+
+            if not fire_loaded:
+                print("[AnomalyDetector] ✗ Fire detection disabled.")
+                print("[AnomalyDetector] → To enable: download a YOLOv8 fire model,")
+                print(f"[AnomalyDetector] → rename it to '{LOCAL_FIRE_MODEL_NAME}',")
+                print(f"[AnomalyDetector] → place it in: {_CACHE_DIR}")
 
         except ImportError:
-            print("[AnomalyDetector] ultralytics not found — "
-                  "pip install ultralytics")
+            print("[AnomalyDetector] ultralytics not installed.")
         except Exception as e:
+            import traceback
             print(f"[AnomalyDetector] Load error: {e}")
+            traceback.print_exc()
 
-    def _analyze(self, track_id, crop):
-        """Run both models on a crop and store result."""
-        label    = "NORMAL"
-        threat   = None
-        score    = 0.0
-        is_alert = False
+    # ── Inference ─────────────────────────────────────────────────────────────
 
-        # ── Weapon detection ───────────────────────────────────────────────────
-        if self._threat_model:
+    def _analyze_weapon(self, track_id, crop):
+        label = "NORMAL"; threat = None; score = 0.0; is_alert = False
+        if self._weapon_model:
             try:
-                results = self._threat_model(crop, verbose=False)[0]
+                results = self._weapon_model(crop, verbose=False)[0]
                 for box in results.boxes:
                     conf = float(box.conf[0])
-                    if conf >= THREAT_CONFIDENCE:
-                        cls_name = results.names[int(box.cls[0])]
-                        if conf > score:
-                            score    = conf
-                            threat   = cls_name
-                            label    = "WEAPON"
-                            is_alert = True
-            except Exception as e:
+                    cls  = results.names[int(box.cls[0])]
+                    if cls in WEAPON_EXCLUDED:
+                        continue
+                    if conf >= WEAPON_CONFIDENCE and conf > score:
+                        score = conf; threat = cls; label = "WEAPON"; is_alert = True
+            except Exception:
                 pass
-
-        # ── Fight detection ────────────────────────────────────────────────────
-        # Only run if no weapon already detected (saves CPU)
-        if self._fight_model and not is_alert:
-            try:
-                results = self._fight_model(crop, verbose=False)[0]
-                for box in results.boxes:
-                    conf     = float(box.conf[0])
-                    cls_name = results.names[int(box.cls[0])].lower()
-                    # Fight model classes: "Violence"/"Fight" vs "NoViolence"/"NoFight"
-                    if ("violence" in cls_name or "fight" in cls_name) \
-                            and "no" not in cls_name \
-                            and conf >= FIGHT_CONFIDENCE:
-                        if conf > score:
-                            score    = conf
-                            threat   = "Fighting"
-                            label    = "FIGHT"
-                            is_alert = True
-            except Exception as e:
-                pass
-
         with self._lock:
             self._results[track_id] = {
-                "label":     label,
-                "threat":    threat,
-                "score":     score,
-                "is_alert":  is_alert,
+                "label": label, "threat": threat,
+                "score": score, "is_alert": is_alert,
                 "timestamp": time.time(),
             }
-
         if is_alert:
-            print(f"[AnomalyDetector] ALERT track {track_id}: "
-                  f"{label} — {threat} ({score:.0%})")
+            print(f"[AnomalyDetector] WEAPON track={track_id} {threat} ({score:.0%})")
+
+    def _analyze_fire(self, frame):
+        label = "NORMAL"; threat = None; score = 0.0; is_alert = False
+        if self._fire_model:
+            try:
+                results = self._fire_model(frame, verbose=False)[0]
+                for box in results.boxes:
+                    conf = float(box.conf[0])
+                    cls  = results.names[int(box.cls[0])]
+                    if cls not in FIRE_VALID_CLASSES:
+                        continue
+                    if conf >= FIRE_CONFIDENCE and conf > score:
+                        score = conf; threat = cls.capitalize()
+                        label = "FIRE"; is_alert = True
+            except Exception as e:
+                print(f"[AnomalyDetector] Fire inference error: {e}")
+        with self._lock:
+            self._fire_result = {
+                "label": label, "threat": threat,
+                "score": score, "is_alert": is_alert,
+                "timestamp": time.time(),
+            }
+        if is_alert:
+            print(f"[AnomalyDetector] FIRE: {threat} ({score:.0%})")
+
+    def clear_result(self, track_id):
+        """Clear stale weapon result for a track (call when track disappears)."""
+        with self._lock:
+            self._results.pop(track_id, None)
 
     def _loop(self):
         self._load_models()
-        if not self._ready:
-            return
-
         while not self._stopped:
+            processed = False
             try:
-                track_id, crop = self._q.get(timeout=0.5)
+                track_id, crop = self._weapon_q.get_nowait()
+                self._analyze_weapon(track_id, crop)
+                processed = True
             except queue.Empty:
-                continue
-            self._analyze(track_id, crop)
+                pass
+            try:
+                frame = self._fire_q.get_nowait()
+                self._analyze_fire(frame)
+                processed = True
+            except queue.Empty:
+                pass
+            if not processed:
+                time.sleep(0.01)

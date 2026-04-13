@@ -893,6 +893,12 @@
         <button class="filter-chip" data-filter="absent" onclick="setFilter('absent',this)">Absent</button>
         <button class="filter-chip" data-filter="distracted" onclick="setFilter('distracted',this)">Distracted</button>
         <button class="filter-chip" data-filter="patrol" onclick="setFilter('patrol',this)">Patrol</button>
+        <button class="filter-chip" data-filter="smoking" onclick="setFilter('smoking',this)">Smoking</button>
+        <button class="filter-chip" data-filter="fight" onclick="setFilter('fight',this)">Fight</button>
+        <button class="filter-chip" data-filter="fire" onclick="setFilter('fire',this)">Fire</button>
+        <button class="filter-chip" data-filter="loitering" onclick="setFilter('loitering',this)">Loitering</button>
+        <button class="filter-chip" data-filter="crowd" onclick="setFilter('crowd',this)">Crowd</button>
+        <button class="filter-chip" data-filter="weapon" onclick="setFilter('weapon',this)">Weapon</button>
       </div>
 
       <div class="log-list" id="log-list"></div>
@@ -1118,12 +1124,18 @@ function updateViolationCount(a) {
 
 // ── Filtering ──────────────────────────────────────────────────
 const filterMap = {
-  sleeping:   ['sleeping', 'guard sleeping'],
-  phone:      ['phone', 'phone usage'],
-  idle:       ['idle', 'guard idle'],
-  absent:     ['missing', 'absent', 'guard missing'],
-  distracted: ['distracted', 'guard distracted'],
+  sleeping:   ['guard sleeping', 'sleeping'],
+  phone:      ['phone usage', 'phone'],
+  idle:       ['guard idle', 'idle'],
+  absent:     ['guard missing', 'missing', 'absent'],
+  distracted: ['guard distracted', 'distracted'],
   patrol:     ['patrol'],
+  smoking:    ['guard smoking', 'smoking'],
+  fight:      ['guard under attack', 'fight', 'violence'],
+  fire:       ['fire', 'smoke'],
+  loitering:  ['loitering'],
+  crowd:      ['crowd'],
+  weapon:     ['weapon detected', 'unattended weapon', 'weapon'],
   all:        [],
 };
 

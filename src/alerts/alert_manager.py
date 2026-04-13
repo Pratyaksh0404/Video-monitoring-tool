@@ -8,7 +8,7 @@ alert_queue = queue.Queue(maxsize=500)
 
 class AlertManager:
     def __init__(self, cooldown=20):
-        self.last = {}
+        self.last     = {}
         self.cooldown = cooldown
 
     def send_alert(self, alert_type, guard_id, zone=None):
@@ -16,28 +16,36 @@ class AlertManager:
         now = time.time()
 
         if key in self.last and now - self.last[key] < self.cooldown:
-            return  # suppress duplicate
+            return  # suppress duplicate within cooldown window
 
         self.last[key] = now
 
-        # Severity mapping
-        severity = "high"
-        if alert_type in ("Guard Missing", "Guard Sleeping", "Phone Usage") or "Weapon" in alert_type or "Threat" in alert_type:
+        # ── Severity mapping ──────────────────────────────────────────────────
+        t = alert_type.lower()
+
+        if any(kw in t for kw in (
+            "missing", "sleeping", "phone", "weapon", "threat",
+            "fire", "smoke", "attack", "fight", "violence"
+        )):
             severity = "high"
-        elif alert_type in ("Guard Distracted", "Guard Idle"):
+
+        elif any(kw in t for kw in (
+            "distracted", "idle", "smoking", "loitering", "crowd", "unknown"
+        )):
             severity = "medium"
+
         else:
             severity = "low"
 
         timestamp = datetime.datetime.now().strftime("%H:%M:%S")
 
         alert = {
-            "type": alert_type,
-            "guard_id": guard_id,
-            "zone": zone or "—",
-            "severity": severity,
+            "type":      alert_type,
+            "guard_id":  guard_id,
+            "zone":      zone or "—",
+            "severity":  severity,
             "timestamp": timestamp,
-            "epoch": now,
+            "epoch":     now,
         }
 
         # Push to browser queue (non-blocking — drop if full)
@@ -46,5 +54,5 @@ class AlertManager:
         except queue.Full:
             pass
 
-        # Keep terminal output working exactly as before
+        # Keep terminal output
         print(f"[ALERT] [{timestamp}] {alert_type} : {guard_id}")
