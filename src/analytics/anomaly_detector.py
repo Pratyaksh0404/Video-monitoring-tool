@@ -1,29 +1,3 @@
-"""
-anomaly_detector.py
-───────────────────
-Weapon detection + best-effort fire/smoke detection.
-
-Fire model strategy (REVISED)
-──────────────────────────────
-HuggingFace access fails on this network (all repos return 404/private).
-We now check for a LOCAL fire model first before trying any downloads.
-
-To enable fire detection:
-  1. Download any YOLOv8 fire/smoke model manually (e.g. from Roboflow,
-     GitHub releases, or any public source)
-  2. Rename it to  fire_model.pt
-  3. Place it in:  model_cache/yolo_threat/fire_model.pt
-  4. Restart the app — fire detection will enable automatically.
-
-Recommended free models to try:
-  - https://huggingface.co/Liang44/fire-detection/resolve/main/best.pt
-    (download in browser, rename to fire_model.pt)
-  - Any YOLOv8n/s trained on fire/smoke dataset from Roboflow Universe
-
-The HuggingFace download attempts are kept as fallback but will skip
-quickly when network is unavailable (timeout added).
-"""
-
 import os
 import shutil
 import threading
@@ -36,17 +10,14 @@ WEAPON_CONFIDENCE = 0.75
 WEAPON_EXCLUDED   = {"grenade", "Grenade", "bomb", "Bomb",
                      "explosion", "Explosion"}
 
-FIRE_CONFIDENCE   = 0.50   # raised from 0.45 for fewer false positives
+FIRE_CONFIDENCE   = 0.50
 FIRE_VALID_CLASSES = {"fire", "Fire", "smoke", "Smoke",
                       "flames", "Flames", "wildfire", "Wildfire"}
 FIRE_REJECT_CLASSES = {"gun", "Gun", "knife", "Knife",
                        "grenade", "Grenade", "explosion", "Explosion"}
 
-# LOCAL fire model path — check this FIRST before any downloads
 LOCAL_FIRE_MODEL_NAME = "fire_model.pt"
 
-# Ordered list of (repo_id, filename) to try for fire detection
-# These are kept as fallback but will fail fast on blocked networks
 FIRE_MODEL_CANDIDATES = [
     ("arnabdhar/YOLOv8-Fire-Detection",
      "runs/detect/train/weights/best.pt"),
@@ -156,10 +127,6 @@ class AnomalyDetector:
         return True
 
     def _try_load_local_fire_model(self):
-        """
-        Check if user has manually placed a fire model in model_cache/yolo_threat/.
-        This is the recommended path since HuggingFace is blocked.
-        """
         os.makedirs(_CACHE_DIR, exist_ok=True)
         local_path = os.path.join(_CACHE_DIR, LOCAL_FIRE_MODEL_NAME)
         if not os.path.exists(local_path):
@@ -241,6 +208,8 @@ class AnomalyDetector:
 
     def _analyze_weapon(self, track_id, crop):
         label = "NORMAL"; threat = None; score = 0.0; is_alert = False
+        boxes = []  # NEW: store bounding box coordinates
+
         if self._weapon_model:
             try:
                 results = self._weapon_model(crop, verbose=False)[0]
@@ -249,14 +218,22 @@ class AnomalyDetector:
                     cls  = results.names[int(box.cls[0])]
                     if cls in WEAPON_EXCLUDED:
                         continue
-                    if conf >= WEAPON_CONFIDENCE and conf > score:
-                        score = conf; threat = cls; label = "WEAPON"; is_alert = True
+                    if conf >= WEAPON_CONFIDENCE:
+                        # Extract bounding box coordinates
+                        xyxy = box.xyxy[0].cpu().numpy().astype(int)
+                        bx1, by1, bx2, by2 = int(xyxy[0]), int(xyxy[1]), int(xyxy[2]), int(xyxy[3])
+                        boxes.append((bx1, by1, bx2, by2))
+
+                        if conf > score:
+                            score = conf; threat = cls; label = "WEAPON"; is_alert = True
             except Exception:
                 pass
+
         with self._lock:
             self._results[track_id] = {
                 "label": label, "threat": threat,
                 "score": score, "is_alert": is_alert,
+                "boxes": boxes,           # NEW: bounding boxes for drawing
                 "timestamp": time.time(),
             }
         if is_alert:

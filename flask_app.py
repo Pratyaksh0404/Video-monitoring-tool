@@ -1,15 +1,8 @@
-"""
-flask_app.py  —  Web server for the Guard Monitoring Dashboard.
-
-Run with:
-    python flask_app.py
-"""
-
 import sys
 import os
-
-# Set model cache BEFORE any other imports — HuggingFace reads these at import
-# time. Setting them after 'import open_clip' is too late.
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
+# Set model cache BEFORE any other imports
 _cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model_cache")
 os.makedirs(_cache_dir, exist_ok=True)
 os.environ["HUGGINGFACE_HUB_CACHE"] = _cache_dir
@@ -17,7 +10,6 @@ os.environ["HF_HOME"]               = _cache_dir
 os.environ["TORCH_HOME"]            = _cache_dir
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 
-# MUST be before any src/ imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
 import json
@@ -25,6 +17,7 @@ import time
 import queue
 import threading
 import datetime
+import uuid
 from collections import Counter, defaultdict
 
 from flask import (
@@ -51,6 +44,10 @@ _alert_log_lock = threading.Lock()
 _sse_subscribers= []
 _sse_lock       = threading.Lock()
 
+# Track acknowledged alert IDs
+_acknowledged_alerts = set()
+_ack_lock            = threading.Lock()
+
 
 def allowed_file(fn):
     return "." in fn and fn.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -69,6 +66,10 @@ def alert_dispatcher():
                 today = datetime.date.today()
                 daily_count = 0
             continue
+
+        # Add unique ID and acknowledged flag to each alert
+        alert["id"] = str(uuid.uuid4())[:8]
+        alert["acknowledged"] = False
 
         daily_count += 1
         streamer.update_stats(alerts_today=daily_count)
@@ -145,14 +146,6 @@ def api_stats():
 def api_analytics():
     """
     Compute analytics from the in-memory alert log.
-    Returns:
-      - type_counts       : { alert_type: count, ... }
-      - severity_counts   : { high/medium/low: count }
-      - zone_counts       : { A/B/C/D: count }
-      - guard_alert_counts: { guard_name: count }
-      - guard_compliance  : { guard_name: patrol_coverage_pct }
-      - hourly_counts     : { "HH:00": count }
-      - total             : int
     """
     with _alert_log_lock:
         log = list(_alert_log)
@@ -162,7 +155,6 @@ def api_analytics():
     zone_counts       = Counter()
     guard_alert_counts= Counter()
     hourly_counts     = defaultdict(int)
-    # guard → set of zones seen across all Patrol alerts
     guard_zones       = defaultdict(set)
 
     for a in log:
@@ -172,14 +164,11 @@ def api_analytics():
         guard      = a.get("guard_id", "")
         timestamp  = a.get("timestamp", "")
 
-        # ── Normalise type for grouping ──────────────────────────────────────
         if alert_type.startswith("Patrol:"):
-            # Parse zone path to compute patrol coverage per guard
             path = alert_type.replace("Patrol:", "").strip()
             for z in path.replace(" ", "").split("->"):
                 if z in ("A", "B", "C", "D"):
                     guard_zones[guard].add(z)
-            # Count patrol events under a single "Patrol" bucket
             type_counts["Patrol"] += 1
         elif alert_type.startswith("Weapon Detected"):
             type_counts["Weapon Detected"] += 1
@@ -188,23 +177,18 @@ def api_analytics():
         else:
             type_counts[alert_type] += 1
 
-        # ── Severity ─────────────────────────────────────────────────────────
         severity_counts[severity] += 1
 
-        # ── Zone ─────────────────────────────────────────────────────────────
         if zone and zone not in ("—", "-", ""):
             zone_counts[zone] += 1
 
-        # ── Per-guard alert count (skip "Post" synthetic guard) ──────────────
         if guard and guard not in ("Post", ""):
             guard_alert_counts[guard] += 1
 
-        # ── Hourly bucket (timestamp is "HH:MM:SS") ──────────────────────────
         if timestamp and len(timestamp) >= 2:
             hour_key = timestamp[:2] + ":00"
             hourly_counts[hour_key] += 1
 
-    # Patrol compliance: % of 4 zones visited
     guard_compliance = {
         g: int(len(zones) / 4 * 100)
         for g, zones in guard_zones.items()
@@ -228,10 +212,15 @@ def api_upload():
     f = request.files["video"]
     if not f.filename or not allowed_file(f.filename):
         return jsonify({"error": "Invalid file"}), 400
+
+    # Guard: don't accept upload if pipeline hasn't started yet
+    stats = streamer.stats
+    if not stats.get("fps") or stats.get("fps") == "—":
+        return jsonify({"error": "Camera not ready yet. Please wait a few seconds and try again."}), 503
+
     filename = secure_filename(f.filename)
     filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
 
-    # Read file bytes in the request context (must happen here, not in thread)
     file_bytes = f.read()
 
     def save_and_start():
@@ -240,7 +229,6 @@ def api_upload():
         print(f"[upload] Saved {filename} ({len(file_bytes)//1024}KB)")
         main_web.start(source=filepath, source_label=filename)
 
-    # Save + start pipeline in background — Flask returns immediately
     threading.Thread(target=save_and_start, daemon=True).start()
 
     return jsonify({"ok": True, "file": filename})
@@ -258,13 +246,57 @@ def api_export():
     with _alert_log_lock:
         log = list(_alert_log)
     if fmt == "csv":
-        lines = ["timestamp,type,guard_id,zone,severity"]
+        lines = ["timestamp,type,guard_id,zone,severity,acknowledged"]
         for a in log:
-            lines.append(f"{a['timestamp']},{a['type']},{a['guard_id']},{a['zone']},{a['severity']}")
+            ack = "yes" if a.get("acknowledged") else "no"
+            lines.append(f"{a['timestamp']},{a['type']},{a['guard_id']},{a['zone']},{a['severity']},{ack}")
         return Response("\n".join(lines), mimetype="text/csv",
                         headers={"Content-Disposition": "attachment; filename=alerts.csv"})
     return Response(json.dumps(log, indent=2), mimetype="application/json",
                     headers={"Content-Disposition": "attachment; filename=alerts.json"})
+
+
+# ── NEW: Alert acknowledgement ────────────────────────────────────────────────
+
+@app.route("/api/alerts/acknowledge", methods=["POST"])
+def api_acknowledge():
+    """Mark an alert as acknowledged by its ID."""
+    data = request.get_json(silent=True) or {}
+    alert_id = data.get("id")
+    if not alert_id:
+        return jsonify({"error": "Missing alert id"}), 400
+
+    with _alert_log_lock:
+        for a in _alert_log:
+            if a.get("id") == alert_id:
+                a["acknowledged"] = True
+                break
+
+    with _ack_lock:
+        _acknowledged_alerts.add(alert_id)
+
+    return jsonify({"ok": True, "id": alert_id})
+
+
+# ── NEW: Config endpoint ─────────────────────────────────────────────────────
+
+@app.route("/api/config")
+def api_config():
+    """Return current rules_config.yaml values."""
+    config_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "config", "rules_config.yaml"
+    )
+    if os.path.exists(config_path):
+        try:
+            import yaml
+            with open(config_path, "r") as f:
+                cfg = yaml.safe_load(f) or {}
+            return jsonify(cfg)
+        except ImportError:
+            return jsonify({"error": "PyYAML not installed"}), 500
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+    return jsonify({"error": "Config file not found"}), 404
 
 
 # ── Startup ───────────────────────────────────────────────────────────────────

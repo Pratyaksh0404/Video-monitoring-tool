@@ -13,22 +13,6 @@ os.environ.setdefault("TORCH_HOME",            os.path.abspath(_CACHE_DIR))
 
 
 class BehaviorClassifier:
-    """
-    CLIP-based behavior classifier.
-
-    Threshold revisions (v3)
-    ─────────────────────────
-    Smoking: 0.70 → 0.60. The 0.70 threshold was too aggressive and blocked
-    ALL smoking detection. 0.60 is still above the previous 0.58 that caused
-    false positives, but allows genuine smoking to pass. The new BehaviorEngine
-    majority-vote system provides the second layer of protection.
-
-    Sleeping: 0.50 → 0.45. Was blocking sleeping detection. BehaviorEngine
-    now handles false positive filtering via majority vote.
-
-    Distracted: kept at 0.40 — fine for the new engine.
-    """
-
     _LABEL_MAP = [
         "NORMAL",
         "SLEEPING",
@@ -40,11 +24,11 @@ class BehaviorClassifier:
 
     _MIN_CONF = {
         "NORMAL":           0.25,
-        "SLEEPING":         0.45,   # restored from 0.50 — was blocking detection
+        "SLEEPING":         0.45,
         "PHONE_USE":        0.50,
         "IDLE":             0.50,
-        "DISTRACTED_OTHER": 0.40,
-        "SMOKING":          0.60,   # lowered from 0.70 — was blocking ALL smoking
+        "DISTRACTED_OTHER": 0.45,   # raised from 0.40 — fewer false positives
+        "SMOKING":          0.65,   # raised from 0.60 — fewer false positives
     }
 
     def __init__(self, device="cpu"):

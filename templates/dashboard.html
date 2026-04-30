@@ -457,6 +457,52 @@
     to   { background: transparent; }
   }
 
+  /* Alert acknowledge button */
+  .ack-btn {
+    font-family: var(--mono);
+    font-size: 9px;
+    letter-spacing: 0.05em;
+    padding: 2px 8px;
+    border-radius: 2px;
+    border: 1px solid var(--border2);
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    transition: all 0.15s;
+    white-space: nowrap;
+    margin-left: 8px;
+    flex-shrink: 0;
+  }
+  .ack-btn:hover { border-color: var(--ok); color: var(--ok); }
+  .ack-btn.acked {
+    border-color: var(--ok);
+    color: var(--ok);
+    background: rgba(34,197,94,0.08);
+    pointer-events: none;
+  }
+
+  .log-item.acknowledged {
+    opacity: 0.5;
+  }
+  .log-item.acknowledged .sev-bar {
+    background: var(--muted) !important;
+  }
+
+  /* Sound toggle */
+  .sound-toggle {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+    cursor: pointer;
+    user-select: none;
+    margin-left: 8px;
+  }
+  .sound-toggle svg { opacity: 0.5; }
+  .sound-toggle.active svg { opacity: 1; color: var(--ok); }
+
   .export-row {
     display: flex;
     align-items: center;
@@ -891,12 +937,10 @@
         <button class="filter-chip" data-filter="phone" onclick="setFilter('phone',this)">Phone</button>
         <button class="filter-chip" data-filter="idle" onclick="setFilter('idle',this)">Idle</button>
         <button class="filter-chip" data-filter="absent" onclick="setFilter('absent',this)">Absent</button>
-        <button class="filter-chip" data-filter="distracted" onclick="setFilter('distracted',this)">Distracted</button>
         <button class="filter-chip" data-filter="patrol" onclick="setFilter('patrol',this)">Patrol</button>
         <button class="filter-chip" data-filter="smoking" onclick="setFilter('smoking',this)">Smoking</button>
         <button class="filter-chip" data-filter="fight" onclick="setFilter('fight',this)">Fight</button>
         <button class="filter-chip" data-filter="fire" onclick="setFilter('fire',this)">Fire</button>
-        <button class="filter-chip" data-filter="loitering" onclick="setFilter('loitering',this)">Loitering</button>
         <button class="filter-chip" data-filter="crowd" onclick="setFilter('crowd',this)">Crowd</button>
         <button class="filter-chip" data-filter="weapon" onclick="setFilter('weapon',this)">Weapon</button>
       </div>
@@ -906,6 +950,14 @@
       <div class="export-row">
         <a class="exp-btn" href="/api/alerts/export?format=csv">Export CSV</a>
         <a class="exp-btn" href="/api/alerts/export?format=json">Export JSON</a>
+        <span class="sound-toggle active" id="sound-toggle" onclick="toggleSound()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+            <path d="M15.54 8.46a5 5 0 0 1 0 7.07" id="sound-wave1"></path>
+            <path d="M19.07 4.93a10 10 0 0 1 0 14.14" id="sound-wave2"></path>
+          </svg>
+          Sound
+        </span>
         <label class="autoscroll-label">
           <input type="checkbox" id="autoscroll" checked>
           Auto-scroll
@@ -1037,7 +1089,7 @@
 
 <script>
 // ══════════════════════════════════════════════════════════
-//  MONITOR TAB — existing logic (unchanged)
+//  MONITOR TAB
 // ══════════════════════════════════════════════════════════
 
 let alertCount     = 0;
@@ -1045,6 +1097,60 @@ let violationCount = 0;
 let currentFilter  = 'all';
 let autoScroll     = true;
 let streamMode     = 'live';
+let soundEnabled   = true;
+
+// ── Alert sound system ────────────────────────────────────────
+// Generate a short beep using Web Audio API (no external file needed)
+let audioCtx = null;
+function playAlertBeep() {
+  if (!soundEnabled) return;
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.frequency.value = 880;  // A5 note
+    osc.type = 'sine';
+    gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
+    osc.start(audioCtx.currentTime);
+    osc.stop(audioCtx.currentTime + 0.3);
+  } catch(e) {
+    // Audio not available — silent fallback
+  }
+}
+
+function toggleSound() {
+  soundEnabled = !soundEnabled;
+  const el = document.getElementById('sound-toggle');
+  el.classList.toggle('active', soundEnabled);
+  const w1 = document.getElementById('sound-wave1');
+  const w2 = document.getElementById('sound-wave2');
+  if (w1) w1.style.display = soundEnabled ? '' : 'none';
+  if (w2) w2.style.display = soundEnabled ? '' : 'none';
+}
+
+// ── Browser notifications ─────────────────────────────────────
+function requestNotificationPermission() {
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
+}
+requestNotificationPermission();
+
+function sendBrowserNotification(title, body) {
+  if ('Notification' in window && Notification.permission === 'granted') {
+    try {
+      new Notification(title, {
+        body: body,
+        icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="%23ef4444"/></svg>',
+        tag: 'gms-alert',
+        requireInteraction: false,
+      });
+    } catch(e) {}
+  }
+}
 
 // ── SSE — alert stream ─────────────────────────────────────────
 const evtSource = new EventSource('/alerts/stream');
@@ -1087,9 +1193,13 @@ function appendAlert(a, isNew) {
   document.getElementById('log-count').textContent = alertCount + ' event' + (alertCount === 1 ? '' : 's');
   document.getElementById('s-alerts').textContent = alertCount;
 
+  const alertId = a.id || '';
+  const isAcked = a.acknowledged || false;
+
   const item = document.createElement('div');
-  item.className = 'log-item' + (isNew ? ' new-flash' : '');
+  item.className = 'log-item' + (isNew ? ' new-flash' : '') + (isAcked ? ' acknowledged' : '');
   item.dataset.type = a.type.toLowerCase();
+  item.dataset.alertId = alertId;
 
   item.innerHTML = `
     <div class="log-top">
@@ -1099,6 +1209,11 @@ function appendAlert(a, isNew) {
         <div class="log-meta">${escHtml(a.guard_id)} &middot; Zone ${escHtml(a.zone)}</div>
       </div>
       <div class="log-time">${escHtml(a.timestamp)}</div>
+      <button class="ack-btn ${isAcked ? 'acked' : ''}"
+              onclick="acknowledgeAlert('${alertId}', this)"
+              title="Mark as reviewed">
+        ${isAcked ? '✓ Acked' : 'Ack'}
+      </button>
     </div>
   `;
 
@@ -1110,9 +1225,33 @@ function appendAlert(a, isNew) {
   const items = list.querySelectorAll('.log-item');
   if (items.length > 200) items[items.length - 1].remove();
 
+  // HIGH severity: beep + browser notification
   if (isNew && a.severity === 'high') {
     showToast(a.type + ' — ' + a.guard_id, true);
+    playAlertBeep();
+    sendBrowserNotification('GMS Alert: ' + a.type, a.guard_id + ' — Zone ' + a.zone);
   }
+}
+
+// ── Alert acknowledgement ─────────────────────────────────────
+function acknowledgeAlert(alertId, btn) {
+  if (!alertId || btn.classList.contains('acked')) return;
+
+  fetch('/api/alerts/acknowledge', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: alertId }),
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      btn.textContent = '✓ Acked';
+      btn.classList.add('acked');
+      const item = btn.closest('.log-item');
+      if (item) item.classList.add('acknowledged');
+    }
+  })
+  .catch(() => {});
 }
 
 function updateViolationCount(a) {
@@ -1128,12 +1267,10 @@ const filterMap = {
   phone:      ['phone usage', 'phone'],
   idle:       ['guard idle', 'idle'],
   absent:     ['guard missing', 'missing', 'absent'],
-  distracted: ['guard distracted', 'distracted'],
   patrol:     ['patrol'],
   smoking:    ['guard smoking', 'smoking'],
   fight:      ['guard under attack', 'fight', 'violence'],
   fire:       ['fire', 'smoke'],
-  loitering:  ['loitering'],
   crowd:      ['crowd'],
   weapon:     ['weapon detected', 'unattended weapon', 'weapon'],
   all:        [],
@@ -1183,6 +1320,8 @@ function uploadVideo(input) {
       showToast('Processing: ' + d.file, false);
       streamMode = 'recorded';
       setTimeout(refreshStream, 1000);
+    } else if (xhr.status === 503) {
+      showToast('Camera not ready yet — wait a few seconds and try again', true);
     } else {
       showToast('Upload failed', true);
     }

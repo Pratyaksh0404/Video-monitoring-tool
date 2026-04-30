@@ -1,36 +1,3 @@
-"""
-main_web.py  —  CV pipeline for the Flask dashboard.
-
-Fixes in this version (v3)
-──────────────────────────
-1. GHOST BOXES after crowd leaves
-   - max_disappeared reduced 150 → 30 (at 4fps = ~7.5s before track dies)
-   - This stops dead tracks from lingering 60+ seconds and generating false alerts
-
-2. UNKNOWN FLOOD in crowd
-   - Unknown alerts suppressed entirely when is_crowd == True
-   - When crowd disperses, a 10s post-crowd cooldown prevents immediate
-     unknown alerts from the freshly-deregistered tracks re-appearing
-
-3. GUARD MISSING cooldown raised 15s → 30s
-   - Prevents spamming during a genuine long absence
-
-4. SMOKING false positives — additional movement gate
-   - Smoking alert only fires when person is NOT moving (speed < IDLE_MAX_SPEED)
-   - A walking/patrolling person cannot be classified as smoking
-
-5. LOITERING suppressed during and briefly after crowd
-   - Loitering alerts suppressed for 15s after crowd disperses
-   - Prevents freshly-arrived unknown persons from immediately triggering loitering
-
-6. BEHAVIOR suppressed for unknowns during crowd
-   - CLIP behavior (smoking, idle, distracted) suppressed for unknown persons
-     when crowd is active — too many false triggers in a busy scene
-
-7. Guard Missing cooldown separate from ALERT_COOLDOWN
-   - Uses MISSING_COOLDOWN = 30s instead of 15s ALERT_COOLDOWN
-"""
-
 import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
@@ -41,8 +8,9 @@ import threading
 import queue
 import numpy as np
 import face_recognition
-from collections import defaultdict
-
+from collections import defaultdict, deque
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
 from video.stream_reader import VideoStreamReader
 from detection.person_detector import PersonDetector
 from detection.tracker import CentroidTracker
@@ -57,24 +25,58 @@ from alerts.alert_manager import AlertManager
 from analytics.anomaly_detector import AnomalyDetector
 from video_streamer import streamer
 
-# ── Thresholds ────────────────────────────────────────────────────────────────
-MIN_PERSON_HEIGHT    = 60
-MIN_PERSON_WIDTH     = 30
-FACE_TOLERANCE       = 0.4
+# ── Config loader ─────────────────────────────────────────────────────────────
+def _load_config():
+    """Load rules_config.yaml if it exists, otherwise return empty dict."""
+    config_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "config", "rules_config.yaml"
+    )
+    if os.path.exists(config_path):
+        try:
+            import yaml
+            with open(config_path, "r") as f:
+                cfg = yaml.safe_load(f) or {}
+            print(f"[main_web] Loaded config from {config_path}")
+            return cfg
+        except ImportError:
+            print("[main_web] PyYAML not installed — using defaults. "
+                  "Install with: pip install pyyaml")
+        except Exception as e:
+            print(f"[main_web] Config load error: {e} — using defaults")
+    return {}
+
+_CFG = _load_config()
+
+def _cfg(section, key, default):
+    """Get a config value with fallback to default."""
+    return _CFG.get(section, {}).get(key, default)
+
+# ── Thresholds (from config or defaults) ──────────────────────────────────────
+MIN_PERSON_HEIGHT    = _cfg("person", "min_height", 60)
+MIN_PERSON_WIDTH     = _cfg("person", "min_width", 30)
+FACE_TOLERANCE       = _cfg("person", "face_tolerance", 0.4)
 FACE_SCALE           = 0.5
-CROWD_THRESHOLD      = 4
+CROWD_THRESHOLD      = _cfg("crowd", "threshold", 4)
 FILE_PRESENCE_WARMUP = 30
 PRESENCE_HOLD        = 5
-FIRE_FRAME_INTERVAL  = 20
-FIRE_RESULT_MAX_AGE  = 8.0
-FIRE_MIN_CONFIDENCE  = 0.65   # FIX: raised from 0.50 — reduces lighting false alarms
-FIRE_SUSTAIN_SECS    = 4.0    # FIX: fire must be detected for 4s before alert fires
-UNKNOWN_GRACE_SECS   = 12
-IDLE_MAX_SPEED       = 12.0
-PATROL_DISPLAY_ZONES = 3
-MISSING_COOLDOWN     = 30    # FIX: raised from 15s — don't spam during long absence
-POST_CROWD_GRACE     = 10.0  # FIX: seconds after crowd ends before unknown alerts resume
-POST_CROWD_LOITER    = 15.0  # FIX: seconds after crowd ends before loitering alerts resume
+FIRE_FRAME_INTERVAL  = _cfg("fire", "frame_interval", 20)
+FIRE_RESULT_MAX_AGE  = _cfg("fire", "result_max_age", 8.0)
+FIRE_MIN_CONFIDENCE  = _cfg("fire", "min_confidence", 0.75)     # raised from 0.70
+FIRE_SUSTAIN_SECS    = _cfg("fire", "sustain_seconds", 6.0)     # raised from 4.0
+FIRE_MIN_CONSECUTIVE = _cfg("fire", "min_consecutive", 3)       # raised from 2
+UNKNOWN_GRACE_SECS   = _cfg("unknown", "grace_seconds", 12)
+IDLE_MAX_SPEED       = _cfg("behavior", "idle_max_speed", 12.0)
+IDLE_USE_CLIP        = _cfg("behavior", "idle_use_clip", False)  # NEW: disable CLIP for idle
+PATROL_DISPLAY_ZONES = _cfg("patrol", "display_zones", 3)
+MISSING_COOLDOWN     = _cfg("alerts", "missing_cooldown", 30)
+IDLE_COOLDOWN        = _cfg("alerts", "idle_cooldown", 60)       # NEW: longer gap between idle alerts
+SIDEWAYS_RADIUS      = _cfg("unknown", "sideways_radius", 200)   # raised from 150px
+SINGLE_PERSON_GRACE  = _cfg("unknown", "single_person_grace", 8.0)  # NEW: suppress unknown if 1 person + guard recently seen
+POST_CROWD_GRACE     = _cfg("crowd", "post_crowd_grace", 10.0)
+POST_CROWD_LOITER    = _cfg("crowd", "post_crowd_loiter", 15.0)
+DRAW_KNIFE_BBOX      = _cfg("weapon", "draw_knife_bbox", True)  # NEW: knife overlay
+TRACKER_MAX_DISAP    = _cfg("tracker", "max_disappeared", 40)   # raised from 30
+TRACKER_MAX_DIST     = _cfg("tracker", "max_distance", 300)
 
 _stop_event     = threading.Event()
 _thread_lock    = threading.Lock()
@@ -255,7 +257,6 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
         "src", "data", "enrolled_faces"
     )
     known_encodings, known_names = load_enrolled_faces(faces_dir)
-    # FIX: set of enrolled guard names — used to suppress "Unknown" when face is just sideways
     enrolled_names = set(known_names)
 
     try:
@@ -266,9 +267,9 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
         return
 
     detector        = PersonDetector(conf_threshold=0.5)
-    # FIX: max_disappeared reduced 150→30. At 4fps = ~7.5s before ghost track dies.
-    # Old value of 150 kept tracks alive ~37s, causing false alerts after crowd leaves.
-    tracker         = CentroidTracker(max_disappeared=30, max_distance=300)
+    # max_disappeared from config (default 40, raised from 30)
+    tracker         = CentroidTracker(max_disappeared=TRACKER_MAX_DISAP,
+                                      max_distance=TRACKER_MAX_DIST)
     presence_mon    = PresenceMonitor(absence_threshold=10, confirm_time=3)
     inactivity_mon  = InactivityMonitor(inactivity_threshold=45,
                                         position_threshold=80, window_time=10)
@@ -299,10 +300,9 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
     presence_buffer  = FILE_PRESENCE_WARMUP if is_file else 0
     warmup_frames    = 10 if is_file else 120
     last_alert_time  = {}
-    ALERT_COOLDOWN   = 30    # raised from 15s — prevents rapid repeat alerts
+    ALERT_COOLDOWN   = _cfg("alerts", "cooldown", 30)
     last_beh_frame   = {}
-    BEH_INTERVAL     = 50    # raised from 30 frames — ~9s between CLIP reads at 5.5fps
-                              # With window=8 readings, confirmation takes ~40-55s
+    BEH_INTERVAL     = _cfg("behavior", "interval_frames", 50)
 
     post_area     = None
     zone_detector = None
@@ -313,12 +313,13 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
     last_seen_guard_name     = "Post"
     last_patrol_alerted_zone = {}
 
-    # FIX: crowd state tracking for post-crowd grace periods
-    crowd_ended_at   = 0.0   # timestamp when crowd last ended
+    # Crowd state tracking for post-crowd grace periods
+    crowd_ended_at   = 0.0
     was_crowd        = False
 
-    # FIX: fire sustained detection — must detect for FIRE_SUSTAIN_SECS before alert
-    fire_first_seen  = 0.0   # timestamp when fire was first detected in current episode
+    # Fire sustained detection — consecutive frame counter + sustain timer
+    fire_first_seen       = 0.0
+    fire_consecutive_hits = 0     # NEW: count consecutive positive fire detections
 
     try:
         while not _stop_event.is_set():
@@ -365,7 +366,7 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                 track_birth.pop(dead_id, None)
                 loitering_det.reset(dead_id)
                 fight_det.reset(dead_id)
-                beh_engine.reset(dead_id)   # FIX: clear majority-vote window for dead track
+                beh_engine.reset(dead_id)
                 last_pos = track_last_pos.pop(dead_id, None)
                 unknown_tracker.on_track_lost(dead_id, last_pos)
                 if anomaly_det:
@@ -384,9 +385,9 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
             now               = time.time()
             is_crowd          = len(person_boxes) >= CROWD_THRESHOLD
 
-            # FIX: Track crowd state transitions for post-crowd grace
+            # Track crowd state transitions for post-crowd grace
             if was_crowd and not is_crowd:
-                crowd_ended_at = now   # crowd just ended
+                crowd_ended_at = now
             was_crowd = is_crowd
 
             in_post_crowd_grace  = (now - crowd_ended_at) < POST_CROWD_GRACE
@@ -405,30 +406,36 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                     anomaly_det.submit_frame(frame)
 
                 fire_res = anomaly_det.get_fire_result()
-                # FIX: higher confidence threshold + sustained detection required
                 fire_confident = (fire_res
                         and fire_res.get("is_alert")
                         and fire_res.get("score", 0) >= FIRE_MIN_CONFIDENCE
                         and (now - fire_res.get("timestamp", 0)) < FIRE_RESULT_MAX_AGE)
 
                 if fire_confident:
-                    if fire_first_seen == 0.0:
-                        fire_first_seen = now   # start sustained timer
-                    # Only alert after sustained for FIRE_SUSTAIN_SECS
-                    elif (now - fire_first_seen) >= FIRE_SUSTAIN_SECS:
-                        if now - last_alert_time.get("fire", 0) > ALERT_COOLDOWN:
-                            t = fire_res.get("threat") or "Fire"
-                            alert_manager.send_alert(
-                                f"Fire / Smoke Detected: {t}", "Camera", zone="—")
-                            last_alert_time["fire"] = now
-                            active_violations.add("Fire")
+                    fire_consecutive_hits += 1
+
+                    # NEW: require multiple consecutive positive detections
+                    # before starting the sustain timer
+                    if fire_consecutive_hits >= FIRE_MIN_CONSECUTIVE:
+                        if fire_first_seen == 0.0:
+                            fire_first_seen = now   # start sustained timer
+                        elif (now - fire_first_seen) >= FIRE_SUSTAIN_SECS:
+                            if now - last_alert_time.get("fire", 0) > ALERT_COOLDOWN:
+                                t = fire_res.get("threat") or "Fire"
+                                alert_manager.send_alert(
+                                    f"Fire / Smoke Detected: {t}", "Camera", zone="—")
+                                last_alert_time["fire"] = now
+                                active_violations.add("Fire")
+
                     cv2.putText(frame,
                                 f"FIRE/SMOKE: {fire_res.get('threat','')} "
                                 f"({fire_res.get('score',0):.0%})",
                                 (10, 65), cv2.FONT_HERSHEY_SIMPLEX,
                                 0.65, (0, 0, 255), 2)
                 else:
-                    fire_first_seen = 0.0   # reset sustained timer if detection drops
+                    # Reset both counters if detection drops
+                    fire_first_seen = 0.0
+                    fire_consecutive_hits = 0
 
             # ── 3. Full-frame weapon scan ─────────────────────────────────────
             if anomaly_det and anomaly_det.is_ready():
@@ -440,6 +447,19 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                         and full_res.get("is_alert")
                         and (now - full_res.get("timestamp", 0)) < 5.0):
                     threat = full_res.get("threat") or "Weapon"
+
+                    # NEW: Draw knife bounding box on frame
+                    if DRAW_KNIFE_BBOX and full_res.get("boxes"):
+                        for kbox in full_res["boxes"]:
+                            kx1, ky1, kx2, ky2 = kbox
+                            cv2.rectangle(frame, (kx1, ky1), (kx2, ky2),
+                                          (0, 0, 255), 2)
+                            cv2.putText(frame,
+                                        f"{threat} ({full_res.get('score',0):.0%})",
+                                        (kx1, max(ky1-8, 12)),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.55,
+                                        (0, 0, 255), 2)
+
                     if not tracked_objects:
                         # No persons — unattended weapon
                         key = f"weapon:frame:{threat}"
@@ -450,9 +470,6 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                             last_alert_time[key] = now
                             active_violations.add("Weapon")
                     else:
-                        # FIX: Persons present — fire as weapon alert if no per-person
-                        # result already caught it. This is the knife fix — knife is often
-                        # missed in small person crops but caught on full frame.
                         per_person_caught = any(
                             anomaly_det.get_result(tid) and
                             anomaly_det.get_result(tid).get("is_alert")
@@ -530,11 +547,13 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                         slot_birth[alert_name] = time.time()
                 else:
                     alert_name = guard_id
+                    # Track when we last saw a known guard (for single-person grace)
+                    last_alert_time["last_guard_seen_at"] = time.time()
 
                 active_guard_ids.add(alert_name)
 
                 # ── Behavior ──────────────────────────────────────────────────
-                # FIX: Don't run behavior for unknowns during crowd — too many false hits
+                # Don't run behavior for unknowns during crowd — too many false hits
                 run_behavior = (post_status == "PRESENT" and
                                 not (guard_id == "UNKNOWN" and is_crowd))
                 if run_behavior:
@@ -600,16 +619,12 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                 elif "CONFIRMED_SLEEPING" in final_state:   color = (0, 0, 255)
                 elif "CONFIRMED" in final_state:            color = (0, 0, 255)
                 elif "POSSIBLE" in final_state:             color = (0, 165, 255)
-                elif is_loitering:                          color = (0, 165, 255)
 
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
 
                 label_text = f"{alert_name} | {final_state}"
                 if anomaly_label != "NORMAL":
                     label_text += f" | {anomaly_threat or anomaly_label}"
-                if is_loitering:
-                    secs = loitering_det.time_in_zone(track_id)
-                    label_text += f" | LOITER {int(secs//60)}m{int(secs%60)}s"
 
                 cv2.putText(frame, label_text,
                             (x1, max(y1-8, 12)),
@@ -640,29 +655,24 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                         send_alert(f"sleep:{guard_id}", "Guard Sleeping")
                     elif "CONFIRMED_PHONE_USE" in final_state:
                         send_alert(f"phone:{guard_id}", "Phone Usage")
-                    elif "CONFIRMED_DISTRACTED_OTHER" in final_state:
-                        send_alert(f"distracted:{guard_id}", "Guard Distracted")
                     elif "CONFIRMED_SMOKING" in final_state and not is_moving:
-                        # FIX: smoking only when NOT moving — walking guard can't smoke
                         send_alert(f"smoking:{guard_id}", "Guard Smoking")
-                    elif not is_moving and (
-                            "CONFIRMED_IDLE" in final_state
-                            and activity_status == "INACTIVE"):
-                        send_alert(f"idle:{guard_id}", "Guard Idle")
 
-                    if is_loitering and not in_post_crowd_loiter:
-                        send_alert(f"loiter:{guard_id}", "Guard Loitering")
+                    # IDLE: Now uses InactivityMonitor only (no CLIP dependency)
+                    # Uses longer IDLE_COOLDOWN (60s) for less spam
+                    elif not is_moving and activity_status == "INACTIVE":
+                        idle_key = f"idle:{guard_id}"
+                        if now - last_alert_time.get(idle_key, 0) > IDLE_COOLDOWN:
+                            alert_manager.send_alert("Guard Idle", alert_name, zone=display_zone)
+                            last_alert_time[idle_key] = now
+                            active_violations.add("Guard Idle")
 
                     if anomaly_label == "WEAPON" and anomaly_threat:
                         send_alert(f"weapon:{guard_id}:{anomaly_threat}",
                                    f"Weapon Detected: {anomaly_threat}")
 
                 else:
-                    # FIX: unknown alerts suppressed during crowd AND post-crowd grace.
-                    # Also suppressed if ANY currently-tracked known guard has a box
-                    # overlapping this unknown person (sideways face = same person).
-                    # We compare centroids — if a known guard's centroid is within
-                    # 150px of this unknown, it's likely the same person turned sideways.
+                    # Unknown person alerts — suppressed during crowd + grace
                     sideways_suppressed = False
                     for tid, tbox in tracked_objects.items():
                         if tid == track_id:
@@ -670,9 +680,17 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                         if identity_memory.get(tid) in enrolled_names:
                             tc = box_centroid(tbox)
                             dist = ((centroid[0]-tc[0])**2 + (centroid[1]-tc[1])**2)**0.5
-                            if dist < 150:
+                            if dist < SIDEWAYS_RADIUS:
                                 sideways_suppressed = True
                                 break
+
+                    # NEW: If only 1 person in frame AND a guard was recently seen,
+                    # this is almost certainly the same guard turned sideways
+                    if (not sideways_suppressed
+                            and len(tracked_objects) == 1
+                            and last_seen_guard_name != "Post"
+                            and (now - last_alert_time.get("last_guard_seen_at", 0)) < SINGLE_PERSON_GRACE):
+                        sideways_suppressed = True
 
                     if not is_crowd and not in_post_crowd_grace and not sideways_suppressed:
                         slot_age = now - slot_birth.get(alert_name, now)
@@ -689,21 +707,12 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                     elif "CONFIRMED_PHONE_USE" in final_state:
                         send_alert(f"phone:{alert_name}",
                                    "Unknown Person Using Phone")
-                    elif "CONFIRMED_DISTRACTED_OTHER" in final_state:
-                        send_alert(f"distracted:{alert_name}",
-                                   "Unknown Person Distracted")
-
-                    # FIX: loitering for unknowns suppressed during/after crowd
-                    if is_loitering and not is_crowd and not in_post_crowd_loiter:
-                        send_alert(f"loiter:{alert_name}",
-                                   "Suspicious Loitering Detected")
 
                     if anomaly_label == "WEAPON" and anomaly_threat:
                         send_alert(f"weapon:{alert_name}:{anomaly_threat}",
                                    f"Weapon Detected: {anomaly_threat}")
 
             # ── Guard Missing ─────────────────────────────────────────────────
-            # FIX: uses MISSING_COOLDOWN (30s) not ALERT_COOLDOWN (15s)
             if post_status == "ABSENT":
                 now = time.time()
                 if now - last_alert_time.get("post_missing", 0) > MISSING_COOLDOWN:

@@ -2,7 +2,7 @@ import math
 
 
 class CentroidTracker:
-    def __init__(self, max_disappeared=50, max_distance=60,
+    def __init__(self, max_disappeared=40, max_distance=60,
                  duplicate_iou_threshold=0.5):
         self.next_object_id          = 0
         self.objects                 = {}

@@ -1,0 +1,92 @@
+# ─────────────────────────────────────────────────────────────────
+# GMS — Guard Monitoring System — Rules Configuration
+# ─────────────────────────────────────────────────────────────────
+# Edit these values to tune detection thresholds without code changes.
+# The system reads this file at startup.
+# ─────────────────────────────────────────────────────────────────
+
+# ── Person Detection ──────────────────────────────────────────────
+person:
+  min_height: 60          # px — ignore tiny detections
+  min_width: 30           # px
+  face_tolerance: 0.4     # face_recognition distance threshold (lower = stricter)
+
+# ── Crowd ─────────────────────────────────────────────────────────
+crowd:
+  threshold: 4            # persons >= this count = crowd
+  post_crowd_grace: 10.0  # seconds after crowd ends — unknown alerts suppressed
+  post_crowd_loiter: 15.0 # seconds after crowd ends — loitering alerts suppressed
+
+# ── Unknown Person ────────────────────────────────────────────────
+unknown:
+  grace_seconds: 12       # seconds before unknown person alert fires
+  spatial_tolerance: 200  # px — slot reuse proximity
+  time_tolerance: 30.0    # seconds — slot memory after track dies
+  alert_suppress_secs: 60.0  # seconds — minimum gap between alerts per slot
+  max_slot_number: 10     # cap slot numbers — recycle after this
+  sideways_radius: 200    # px — suppress unknown if known guard centroid this close
+  single_person_grace: 8.0  # seconds — if 1 person + guard recently seen, suppress unknown
+
+# ── Fire / Smoke ──────────────────────────────────────────────────
+fire:
+  min_confidence: 0.75    # minimum confidence for fire detection (raised from 0.70)
+  sustain_seconds: 6.0    # fire must persist this long before alert fires
+  min_consecutive: 3      # minimum consecutive positive detections needed (raised from 2)
+  frame_interval: 20      # run fire model every N frames
+  result_max_age: 8.0     # discard fire results older than this (seconds)
+
+# ── Weapons ───────────────────────────────────────────────────────
+weapon:
+  confidence: 0.75        # minimum confidence for weapon alert
+  draw_knife_bbox: true   # draw bounding box on frame for knife detections
+
+# ── Behavior (CLIP) ──────────────────────────────────────────────
+behavior:
+  interval_frames: 50     # frames between CLIP readings (~9s at 5.5fps)
+  idle_max_speed: 12.0    # px/frame — above this = person is moving
+
+  # CLIP minimum confidence thresholds (per label)
+  clip_thresholds:
+    NORMAL: 0.25
+    SLEEPING: 0.45
+    PHONE_USE: 0.50
+    IDLE: 0.50
+    DISTRACTED_OTHER: 0.45   # raised from 0.40 for fewer false positives
+    SMOKING: 0.65            # raised from 0.60 for fewer false positives
+
+  # BehaviorEngine majority-vote confirm ratios
+  confirm_ratios:
+    SMOKING: 0.75            # raised from 0.70 — very strict
+    SLEEPING: 0.60
+    PHONE_USE: 0.60
+    IDLE: 0.55
+    DISTRACTED_OTHER: 0.55
+
+  # Idle detection: use_clip=false means rely solely on InactivityMonitor
+  idle_use_clip: false
+
+# ── Loitering ─────────────────────────────────────────────────────
+loitering:
+  unknown_zone_time: 30   # seconds — unknown person in same zone
+  known_zone_time: 90     # seconds — known guard in same zone
+
+# ── Fight / Violence ─────────────────────────────────────────────
+fight:
+  proximity_factor: 0.8   # × avg box height — must be very close
+  motion_threshold: 20.0  # px/frame — both persons must move this fast
+  confirm_seconds: 5.0    # sustained conditions before fight alert fires
+
+# ── Patrol ────────────────────────────────────────────────────────
+patrol:
+  display_zones: 3        # last N zones shown in patrol alert
+
+# ── Alerts ────────────────────────────────────────────────────────
+alerts:
+  cooldown: 30            # seconds — general alert repeat cooldown
+  missing_cooldown: 30    # seconds — Guard Missing repeat cooldown
+  idle_cooldown: 60       # seconds — Guard Idle repeat cooldown (longer to reduce spam)
+
+# ── Tracker ──────────────────────────────────────────────────────
+tracker:
+  max_disappeared: 40     # frames before track is deregistered (raised from 30)
+  max_distance: 300       # px — max centroid distance for association

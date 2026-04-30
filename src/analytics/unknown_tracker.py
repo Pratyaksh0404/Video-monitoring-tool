@@ -1,19 +1,3 @@
-"""
-unknown_tracker.py
-──────────────────
-Gives unknown persons a STABLE persistent label across track_id reassignments.
-
-Fixes in this version
-─────────────────────
-- TIME_TOLERANCE raised 12s → 30s  (at 2.5fps, track churn is slow)
-- SPATIAL_TOLERANCE raised 150px → 200px  (person can drift between reassignments)
-- Per-slot alert_fired tracking: once a slot fires an "Unknown Person Detected"
-  alert, it won't fire again for ALERT_SUPPRESS_SECS (60s) even if track dies
-  and a new track_id picks up the same slot. This is what stops the flood.
-- on_track_lost now always records last_centroid even if not provided (uses
-  last known position from get_or_assign calls)
-"""
-
 import time
 
 

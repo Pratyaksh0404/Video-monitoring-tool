@@ -3,35 +3,13 @@ from collections import deque
 
 
 class BehaviorEngine:
-    """
-    State machine that converts raw CLIP labels into confirmed behaviors.
-
-    REWRITE: Majority-vote approach instead of strict consecutive timer.
-    ─────────────────────────────────────────────────────────────────────
-    Old approach: Required X seconds of CONSECUTIVE same label. One NORMAL
-    reading reset the entire timer. At 5fps with BEH_INTERVAL=30, a single
-    "NORMAL" frame between two "SLEEPING" frames killed all progress.
-
-    New approach: Rolling window of last N CLIP readings. If majority
-    (>= CONFIRM_RATIO) of readings are the same label → CONFIRMED.
-    If >= POSSIBLE_RATIO → POSSIBLE. Much more robust to occasional
-    label flips from CLIP.
-
-    Per-label tuning:
-    - SMOKING: requires higher ratio (0.70) — still cautious
-    - SLEEPING/PHONE: standard ratio (0.60)
-    - DISTRACTED/IDLE: lower ratio (0.55) — easier to confirm
-    """
-
-    WINDOW_SIZE    = 6      # rolling window of CLIP readings
-                            # At BEH_INTERVAL=50 frames, 5.5fps → ~9s per reading
-                            # 6 readings = ~54s window; confirm needs 4 readings = ~36s
+    WINDOW_SIZE    = 8
     CONFIRM_RATIO  = 0.60   # 60% of readings must agree → CONFIRMED
     POSSIBLE_RATIO = 0.40   # 40% of readings must agree → POSSIBLE
 
     # Per-label confirm ratio overrides
     _CONFIRM_RATIO_OVERRIDE = {
-        "SMOKING":          0.70,   # stricter — many false positives
+        "SMOKING":          0.75,   # raised from 0.70 — very strict
         "SLEEPING":         0.60,
         "PHONE_USE":        0.60,
         "IDLE":             0.55,
@@ -39,8 +17,8 @@ class BehaviorEngine:
     }
 
     # Minimum readings in window before we confirm anything
-    MIN_READINGS_FOR_CONFIRM  = 4   # needs ~36s of consistent behavior before CONFIRMED
-    MIN_READINGS_FOR_POSSIBLE = 2   # needs ~18s before POSSIBLE
+    MIN_READINGS_FOR_CONFIRM  = 6   # needs ~36s of consistent behavior before CONFIRMED
+    MIN_READINGS_FOR_POSSIBLE = 3   # needs ~18s before POSSIBLE
 
     def __init__(self):
         # track_id → deque of (timestamp, label) readings
