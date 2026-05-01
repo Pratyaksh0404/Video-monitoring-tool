@@ -133,6 +133,20 @@
     color: var(--muted);
   }
 
+  .cam-select {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text);
+    background: var(--surface);
+    border: 1px solid var(--border2);
+    border-radius: 3px;
+    padding: 3px 8px;
+    margin-left: 10px;
+    cursor: pointer;
+    outline: none;
+  }
+  .cam-select:focus { border-color: var(--accent); }
+
   /* ── Stats bar ────────────────────────────────────────────── */
   .statsbar {
     display: grid;
@@ -850,6 +864,10 @@
     </nav>
 
     <div class="cam-label" id="cam-label">Camera 0</div>
+    <!-- Camera selector (only visible in multi-camera mode) -->
+    <select class="cam-select" id="cam-select" style="display:none;"
+            onchange="switchCamera(this.value)">
+    </select>
     <div class="topbar-right">
       <span class="mode-badge" id="mode-badge">LIVE</span>
     </div>
@@ -1374,6 +1392,51 @@ function showToast(msg, isDanger) {
 }
 
 // ── Utils ──────────────────────────────────────────────────────
+// ── Multi-camera support ────────────────────────────────────────
+let currentCamId = null;
+
+function initMultiCamera() {
+  fetch('/api/cameras')
+    .then(r => r.json())
+    .then(d => {
+      if (!d.multi_camera) return;  // single-camera mode — do nothing
+
+      const select = document.getElementById('cam-select');
+      select.style.display = 'inline-block';
+      select.innerHTML = '';
+
+      d.cameras.forEach(cam => {
+        if (!cam.enabled) return;
+        const opt = document.createElement('option');
+        opt.value = cam.cam_id;
+        opt.textContent = cam.name;
+        if (cam.cam_id === d.default) opt.selected = true;
+        select.appendChild(opt);
+      });
+
+      // Switch to default camera
+      if (d.default) switchCamera(d.default);
+    })
+    .catch(() => {});
+}
+
+function switchCamera(camId) {
+  currentCamId = camId;
+  const img = document.getElementById('live-img');
+  img.src = '/video_feed/' + camId + '?' + Date.now();
+
+  // Update label
+  const select = document.getElementById('cam-select');
+  const opt = select.querySelector('option[value="' + camId + '"]');
+  if (opt) {
+    document.getElementById('cam-label').textContent = opt.textContent;
+  }
+}
+
+// Initialize multi-camera on page load
+initMultiCamera();
+
+// ── Utils ──────────────────────────────────────────────────
 function escHtml(s) {
   return String(s)
     .replace(/&/g,'&amp;').replace(/</g,'&lt;')

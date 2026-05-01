@@ -30,6 +30,29 @@ import main_web
 from video_streamer import streamer
 from alerts.alert_manager import alert_queue
 
+# ── Multi-camera + Email setup ────────────────────────────────────────────────
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Load rules config for email settings
+_rules_config = {}
+_rules_config_path = os.path.join(_BASE_DIR, "config", "rules_config.yaml")
+if os.path.exists(_rules_config_path):
+    try:
+        import yaml
+        with open(_rules_config_path, "r") as f:
+            _rules_config = yaml.safe_load(f) or {}
+    except Exception:
+        pass
+
+# Email alerter (sends emails for high-severity events)
+from email_alerter import EmailAlerter
+_email_alerter = EmailAlerter(_rules_config.get("email", {}))
+
+# Camera manager (multi-camera support)
+from camera_manager import CameraManager
+_cam_config_path = os.path.join(_BASE_DIR, "config", "camera_config.yaml")
+_cam_manager = CameraManager(_cam_config_path)
+
 
 app = Flask(__name__)
 app.config["UPLOAD_FOLDER"] = "uploads"
@@ -70,6 +93,10 @@ def alert_dispatcher():
         # Add unique ID and acknowledged flag to each alert
         alert["id"] = str(uuid.uuid4())[:8]
         alert["acknowledged"] = False
+
+        # Send email for high-severity events
+        if alert.get("severity") == "high":
+            _email_alerter.send(alert)
 
         daily_count += 1
         streamer.update_stats(alerts_today=daily_count)
@@ -299,10 +326,51 @@ def api_config():
     return jsonify({"error": "Config file not found"}), 404
 
 
+# ── Multi-camera API ─────────────────────────────────────────────────────────
+
+@app.route("/api/cameras")
+def api_cameras():
+    """List all configured cameras with their status."""
+    return jsonify({
+        "multi_camera": _cam_manager.is_multi_camera,
+        "default": _cam_manager.default_camera,
+        "cameras": _cam_manager.get_cameras_list(),
+    })
+
+
+@app.route("/video_feed/<cam_id>")
+def video_feed_cam(cam_id):
+    """MJPEG stream for a specific camera (multi-camera mode)."""
+    cam_streamer = _cam_manager.get_streamer(cam_id)
+    if not cam_streamer:
+        return "Camera not found", 404
+    return Response(
+        stream_with_context(cam_streamer.generate_mjpeg()),
+        mimetype="multipart/x-mixed-replace; boundary=frame"
+    )
+
+
+@app.route("/api/cameras/<cam_id>/stats")
+def api_camera_stats(cam_id):
+    """Stats for a specific camera."""
+    cam_streamer = _cam_manager.get_streamer(cam_id)
+    if not cam_streamer:
+        return jsonify({"error": "Camera not found"}), 404
+    return jsonify(cam_streamer.stats)
+
+
 # ── Startup ───────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     threading.Thread(target=alert_dispatcher, daemon=True).start()
-    main_web.start(source=0, source_label="Camera 0")
+
+    if _cam_manager.is_multi_camera:
+        # Multi-camera mode — start all enabled cameras
+        _cam_manager.start_all()
+        print(f"\n  Multi-camera mode — {len(_cam_manager.cameras)} cameras configured")
+    else:
+        # Single-camera mode (backward compatible)
+        main_web.start(source=0, source_label="Camera 0")
+
     print("\n  Dashboard → http://127.0.0.1:5000\n")
     app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)

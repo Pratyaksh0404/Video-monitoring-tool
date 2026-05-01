@@ -24,11 +24,11 @@ class BehaviorClassifier:
 
     _MIN_CONF = {
         "NORMAL":           0.25,
-        "SLEEPING":         0.45,
+        "SLEEPING":         0.55,   # raised from 0.45 — too many false positives on "looking down"
         "PHONE_USE":        0.50,
         "IDLE":             0.50,
-        "DISTRACTED_OTHER": 0.45,   # raised from 0.40 — fewer false positives
-        "SMOKING":          0.65,   # raised from 0.60 — fewer false positives
+        "DISTRACTED_OTHER": 0.45,
+        "SMOKING":          0.70,   # raised from 0.65 — hand-near-face triggers too easily
     }
 
     def __init__(self, device="cpu"):
@@ -45,13 +45,14 @@ class BehaviorClassifier:
 
         self.tokenizer = open_clip.get_tokenizer("RN50")
 
+        # v5: More specific prompts to reduce false positives
         self.labels = [
-            "a security guard standing alert and watching",
-            "a security guard sleeping or dozing off on duty",
-            "a security guard using a mobile phone",
+            "a security guard standing upright alert and watching attentively",
+            "a security guard with eyes closed head drooping asleep on duty",
+            "a security guard holding and looking at a mobile phone screen",
             "a security guard sitting or standing idle and inactive",
             "a distracted security guard looking away or talking to someone",
-            "a person smoking a cigarette or holding one to their mouth",
+            "a person with a lit cigarette with visible smoke near their mouth",
         ]
 
         self.text_tokens = self.tokenizer(self.labels).to(self.device)

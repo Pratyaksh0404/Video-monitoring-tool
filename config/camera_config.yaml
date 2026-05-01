@@ -1,0 +1,44 @@
+# Define all cameras the system should monitor.
+# Each camera runs its own independent detection pipeline.
+#
+# Source types:
+#   - Webcam:    source: 0  (device index)
+#   - RTSP/IP:   source: "rtsp://user:pass@192.168.1.100:554/stream1"
+#   - Video file: source: "uploads/test_video.mp4"  (loops automatically)
+#
+# For testing with a single laptop webcam:
+#   - Set camera_1 to your webcam (source: 0)
+#   - Set camera_2 to a video file (source: "uploads/some_video.mp4")
+# ─────────────────────────────────────────────────────────────────
+
+# Set to true to enable multi-camera mode
+# When false, the system runs in single-camera mode (backward compatible)
+multi_camera_enabled: false
+
+# Default camera to show when dashboard loads
+default_camera: cam_1
+
+cameras:
+  cam_1:
+    name: "Main Entrance"
+    source: 0                    # Laptop webcam
+    enabled: true
+    # Optional: override detection settings per camera
+    # person_confidence: 0.5
+    # face_scale: 0.5
+
+  cam_2:
+    name: "Parking Lot"
+    source: "uploads/sample.mp4"  # Video file for testing
+    enabled: false                # Set to true when you have a source ready
+    # loop: true                  # Loop video files (default: true)
+
+  cam_3:
+    name: "Back Gate"
+    source: "rtsp://admin:admin@192.168.1.100:554/stream1"
+    enabled: false
+
+  cam_4:
+    name: "Server Room"
+    source: "rtsp://admin:admin@192.168.1.101:554/stream1"
+    enabled: false

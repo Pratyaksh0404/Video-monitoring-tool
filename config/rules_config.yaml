@@ -1,8 +1,4 @@
-# ─────────────────────────────────────────────────────────────────
-# GMS — Guard Monitoring System — Rules Configuration
-# ─────────────────────────────────────────────────────────────────
 # Edit these values to tune detection thresholds without code changes.
-# The system reads this file at startup.
 # ─────────────────────────────────────────────────────────────────
 
 # ── Person Detection ──────────────────────────────────────────────
@@ -25,13 +21,13 @@ unknown:
   alert_suppress_secs: 60.0  # seconds — minimum gap between alerts per slot
   max_slot_number: 10     # cap slot numbers — recycle after this
   sideways_radius: 200    # px — suppress unknown if known guard centroid this close
-  single_person_grace: 8.0  # seconds — if 1 person + guard recently seen, suppress unknown
+  single_person_grace: 15.0  # seconds — if 1 person + guard recently seen, suppress unknown
 
 # ── Fire / Smoke ──────────────────────────────────────────────────
 fire:
-  min_confidence: 0.75    # minimum confidence for fire detection (raised from 0.70)
-  sustain_seconds: 6.0    # fire must persist this long before alert fires
-  min_consecutive: 3      # minimum consecutive positive detections needed (raised from 2)
+  min_confidence: 0.70    # per-reading threshold (rolling window is the real guard)
+  sustain_seconds: 6.0    # time window for hit accumulation
+  min_consecutive: 3      # hits needed within sustain_seconds to fire alert
   frame_interval: 20      # run fire model every N frames
   result_max_age: 8.0     # discard fire results older than this (seconds)
 
@@ -48,18 +44,18 @@ behavior:
   # CLIP minimum confidence thresholds (per label)
   clip_thresholds:
     NORMAL: 0.25
-    SLEEPING: 0.45
+    SLEEPING: 0.55           # raised from 0.45 — looking down ≠ sleeping
     PHONE_USE: 0.50
     IDLE: 0.50
-    DISTRACTED_OTHER: 0.45   # raised from 0.40 for fewer false positives
-    SMOKING: 0.65            # raised from 0.60 for fewer false positives
+    DISTRACTED_OTHER: 0.45
+    SMOKING: 0.70            # raised from 0.65 — hand near face ≠ smoking
 
   # BehaviorEngine majority-vote confirm ratios
   confirm_ratios:
-    SMOKING: 0.75            # raised from 0.70 — very strict
-    SLEEPING: 0.60
+    SMOKING: 0.85            # raised from 0.75 — extremely strict (7 of 8 readings)
+    SLEEPING: 0.70           # raised from 0.60 — needs 6 of 8 readings
     PHONE_USE: 0.60
-    IDLE: 0.55
+    IDLE: 0.60
     DISTRACTED_OTHER: 0.55
 
   # Idle detection: use_clip=false means rely solely on InactivityMonitor
@@ -85,8 +81,29 @@ alerts:
   cooldown: 30            # seconds — general alert repeat cooldown
   missing_cooldown: 30    # seconds — Guard Missing repeat cooldown
   idle_cooldown: 60       # seconds — Guard Idle repeat cooldown (longer to reduce spam)
+  idle_startup_grace: 90  # seconds — suppress idle for first 90s after pipeline start
 
 # ── Tracker ──────────────────────────────────────────────────────
 tracker:
   max_disappeared: 40     # frames before track is deregistered (raised from 30)
   max_distance: 300       # px — max centroid distance for association
+
+# ── Email Alerts ─────────────────────────────────────────────────
+# Sends email for high-severity events (weapon, fire, fight, guard missing)
+# To use Gmail: enable 2FA, then create App Password at
+# https://myaccount.google.com/apppasswords
+email:
+  enabled: true           # Set to true to enable email alerts
+  smtp_server: smtp.gmail.com
+  smtp_port: 587
+  sender: ""               # sender's email id
+  password: ""             # Gmail App Password (NOT your real password)
+  recipients: []           # receiver's email id
+  alert_types:
+    - Weapon Detected
+    - Unattended Weapon Detected
+    - Fire / Smoke Detected
+    - Fight / Violence Detected
+    - Guard Under Attack
+    - Guard Missing
+  cooldown: 60            # seconds between emails of same type (1 min)

@@ -61,7 +61,7 @@ FILE_PRESENCE_WARMUP = 30
 PRESENCE_HOLD        = 5
 FIRE_FRAME_INTERVAL  = _cfg("fire", "frame_interval", 20)
 FIRE_RESULT_MAX_AGE  = _cfg("fire", "result_max_age", 8.0)
-FIRE_MIN_CONFIDENCE  = _cfg("fire", "min_confidence", 0.75)     # raised from 0.70
+FIRE_MIN_CONFIDENCE  = _cfg("fire", "min_confidence", 0.70)     # per-reading threshold; rolling window of 3 hits in 6s is the real guard
 FIRE_SUSTAIN_SECS    = _cfg("fire", "sustain_seconds", 6.0)     # raised from 4.0
 FIRE_MIN_CONSECUTIVE = _cfg("fire", "min_consecutive", 3)       # raised from 2
 UNKNOWN_GRACE_SECS   = _cfg("unknown", "grace_seconds", 12)
@@ -70,8 +70,9 @@ IDLE_USE_CLIP        = _cfg("behavior", "idle_use_clip", False)  # NEW: disable 
 PATROL_DISPLAY_ZONES = _cfg("patrol", "display_zones", 3)
 MISSING_COOLDOWN     = _cfg("alerts", "missing_cooldown", 30)
 IDLE_COOLDOWN        = _cfg("alerts", "idle_cooldown", 60)       # NEW: longer gap between idle alerts
+IDLE_STARTUP_GRACE   = _cfg("alerts", "idle_startup_grace", 90)  # NEW: suppress idle for first 90s after pipeline start
 SIDEWAYS_RADIUS      = _cfg("unknown", "sideways_radius", 200)   # raised from 150px
-SINGLE_PERSON_GRACE  = _cfg("unknown", "single_person_grace", 8.0)  # NEW: suppress unknown if 1 person + guard recently seen
+SINGLE_PERSON_GRACE  = _cfg("unknown", "single_person_grace", 15.0)  # raised from 8s — suppress unknown if 1 person + guard recently seen
 POST_CROWD_GRACE     = _cfg("crowd", "post_crowd_grace", 10.0)
 POST_CROWD_LOITER    = _cfg("crowd", "post_crowd_loiter", 15.0)
 DRAW_KNIFE_BBOX      = _cfg("weapon", "draw_knife_bbox", True)  # NEW: knife overlay
@@ -245,12 +246,26 @@ class BehaviorWorker:
 
 
 def run(source=0, source_label="Camera 0", beh_worker=None,
-        beh_label_cache=None, beh_cache_lock=None, anomaly_det=None):
+        beh_label_cache=None, beh_cache_lock=None, anomaly_det=None,
+        stop_event=None, cam_streamer=None):
+    """
+    Main pipeline loop.
+
+    stop_event:   threading.Event — if provided, used instead of global _stop_event
+    cam_streamer: CameraStreamer   — if provided, used instead of global streamer
+                                    (for multi-camera mode)
+    """
     global _stop_event
-    _stop_event.clear()
+
+    # Use provided stop_event or global
+    effective_stop = stop_event if stop_event is not None else _stop_event
+    effective_stop.clear()
+
+    # Use provided streamer or global
+    effective_streamer = cam_streamer if cam_streamer is not None else streamer
 
     is_file = isinstance(source, str)
-    streamer.set_source("file" if is_file else "webcam", source_label)
+    effective_streamer.set_source("file" if is_file else "webcam", source_label)
 
     faces_dir = os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
@@ -317,19 +332,21 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
     crowd_ended_at   = 0.0
     was_crowd        = False
 
-    # Fire sustained detection — consecutive frame counter + sustain timer
-    fire_first_seen       = 0.0
-    fire_consecutive_hits = 0     # NEW: count consecutive positive fire detections
+    # Fire sustained detection — rolling window of confident detection timestamps
+    fire_hits = []   # timestamps of readings that hit FIRE_MIN_CONFIDENCE
+
+    # Pipeline start time — for startup grace periods
+    pipeline_start_time = time.time()
 
     try:
-        while not _stop_event.is_set():
+        while not effective_stop.is_set():
             frame_count += 1
             frame = stream.read_frame()
             if frame is None:
                 break
 
             if frame_count < warmup_frames:
-                streamer.push_frame(frame)
+                effective_streamer.push_frame(frame)
                 continue
 
             if post_area is None:
@@ -401,41 +418,45 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                     active_violations.add("Crowd")
 
             # ── 2. Fire detection ─────────────────────────────────────────────
+            # Strategy: rolling time window of fire model readings.
+            # A reading is "positive" if score >= FIRE_MIN_CONFIDENCE (0.70).
+            # If 3+ positive readings in the last FIRE_SUSTAIN_SECS (6s) → alert.
+            # Much more robust than consecutive counter — handles gaps between
+            # fire model runs (every 20 frames) without false resets.
             if anomaly_det and anomaly_det._fire_ready:
                 if frame_count % FIRE_FRAME_INTERVAL == 0:
                     anomaly_det.submit_frame(frame)
 
                 fire_res = anomaly_det.get_fire_result()
-                fire_confident = (fire_res
+                if (fire_res
                         and fire_res.get("is_alert")
-                        and fire_res.get("score", 0) >= FIRE_MIN_CONFIDENCE
-                        and (now - fire_res.get("timestamp", 0)) < FIRE_RESULT_MAX_AGE)
+                        and (now - fire_res.get("timestamp", 0)) < FIRE_RESULT_MAX_AGE):
 
-                if fire_confident:
-                    fire_consecutive_hits += 1
+                    score = fire_res.get("score", 0)
+                    if score >= FIRE_MIN_CONFIDENCE:
+                        fire_hits.append(now)
 
-                    # NEW: require multiple consecutive positive detections
-                    # before starting the sustain timer
-                    if fire_consecutive_hits >= FIRE_MIN_CONSECUTIVE:
-                        if fire_first_seen == 0.0:
-                            fire_first_seen = now   # start sustained timer
-                        elif (now - fire_first_seen) >= FIRE_SUSTAIN_SECS:
-                            if now - last_alert_time.get("fire", 0) > ALERT_COOLDOWN:
-                                t = fire_res.get("threat") or "Fire"
-                                alert_manager.send_alert(
-                                    f"Fire / Smoke Detected: {t}", "Camera", zone="—")
-                                last_alert_time["fire"] = now
-                                active_violations.add("Fire")
+                    # Purge hits older than FIRE_SUSTAIN_SECS
+                    fire_hits = [t for t in fire_hits
+                                 if now - t < FIRE_SUSTAIN_SECS]
+
+                    # Alert if enough positive readings in window
+                    if len(fire_hits) >= FIRE_MIN_CONSECUTIVE:
+                        if now - last_alert_time.get("fire", 0) > ALERT_COOLDOWN:
+                            t = fire_res.get("threat") or "Fire"
+                            alert_manager.send_alert(
+                                f"Fire / Smoke Detected: {t}", "Camera", zone="—")
+                            last_alert_time["fire"] = now
+                            active_violations.add("Fire")
 
                     cv2.putText(frame,
                                 f"FIRE/SMOKE: {fire_res.get('threat','')} "
-                                f"({fire_res.get('score',0):.0%})",
+                                f"({score:.0%})",
                                 (10, 65), cv2.FONT_HERSHEY_SIMPLEX,
                                 0.65, (0, 0, 255), 2)
                 else:
-                    # Reset both counters if detection drops
-                    fire_first_seen = 0.0
-                    fire_consecutive_hits = 0
+                    # Decay stale hits
+                    fire_hits = [t for t in fire_hits if now - t < FIRE_SUSTAIN_SECS]
 
             # ── 3. Full-frame weapon scan ─────────────────────────────────────
             if anomaly_det and anomaly_det.is_ready():
@@ -527,17 +548,33 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                 track_last_pos[track_id] = centroid
 
                 # ── Identity ──────────────────────────────────────────────────
-                best_score, recognized_name = 0.0, "UNKNOWN"
-                for (ft, fr, fb, fl, fname) in face_results:
-                    score = iou(person_box, (fl, ft, fr, fb))
-                    if score > best_score:
-                        best_score, recognized_name = score, fname
+                # Once a track is identified via face recognition, it keeps that
+                # identity FOREVER (even if face is no longer visible due to
+                # turning sideways, looking down, etc.)
+                if track_id not in identity_memory:
+                    # Only try face matching for tracks that haven't been identified yet
+                    best_score, recognized_name = 0.0, "UNKNOWN"
+                    for (ft, fr, fb, fl, fname) in face_results:
+                        score = iou(person_box, (fl, ft, fr, fb))
+                        if score > best_score:
+                            best_score, recognized_name = score, fname
 
-                if recognized_name != "UNKNOWN" and best_score > 0.1:
-                    identity_memory[track_id] = recognized_name
-                    last_seen_guard_name = recognized_name
-                    if unknown_tracker.get_slot(track_id):
-                        unknown_tracker.on_track_lost(track_id, centroid)
+                    if recognized_name != "UNKNOWN" and best_score > 0.1:
+                        identity_memory[track_id] = recognized_name
+                        last_seen_guard_name = recognized_name
+                        if unknown_tracker.get_slot(track_id):
+                            unknown_tracker.on_track_lost(track_id, centroid)
+                else:
+                    # Track already identified — just update the last seen guard name
+                    last_seen_guard_name = identity_memory[track_id]
+                    # Still try to match faces (in case a DIFFERENT face appears
+                    # overlapping this track — e.g. two people very close)
+                    for (ft, fr, fb, fl, fname) in face_results:
+                        if fname != "UNKNOWN":
+                            score = iou(person_box, (fl, ft, fr, fb))
+                            if score > 0.3:
+                                identity_memory[track_id] = fname
+                                last_seen_guard_name = fname
 
                 guard_id = identity_memory.get(track_id, "UNKNOWN")
 
@@ -651,16 +688,20 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                 is_moving = person_speed > IDLE_MAX_SPEED
 
                 if guard_id != "UNKNOWN":
-                    if "CONFIRMED_SLEEPING" in final_state:
+                    # SLEEPING: requires person to be stationary (not just looking down)
+                    if "CONFIRMED_SLEEPING" in final_state and not is_moving:
                         send_alert(f"sleep:{guard_id}", "Guard Sleeping")
                     elif "CONFIRMED_PHONE_USE" in final_state:
                         send_alert(f"phone:{guard_id}", "Phone Usage")
+                    # SMOKING: DISABLED — CLIP produces too many false positives.
+                    # Re-enable when dedicated YOLOv8 cigarette model is integrated.
                     elif "CONFIRMED_SMOKING" in final_state and not is_moving:
-                        send_alert(f"smoking:{guard_id}", "Guard Smoking")
+                         send_alert(f"smoking:{guard_id}", "Guard Smoking")
 
-                    # IDLE: Now uses InactivityMonitor only (no CLIP dependency)
-                    # Uses longer IDLE_COOLDOWN (60s) for less spam
-                    elif not is_moving and activity_status == "INACTIVE":
+                    # IDLE: InactivityMonitor only, with startup grace + long cooldown
+                    # Suppressed for first IDLE_STARTUP_GRACE seconds after pipeline starts
+                    elif (not is_moving and activity_status == "INACTIVE"
+                          and (now - pipeline_start_time) > IDLE_STARTUP_GRACE):
                         idle_key = f"idle:{guard_id}"
                         if now - last_alert_time.get(idle_key, 0) > IDLE_COOLDOWN:
                             alert_manager.send_alert("Guard Idle", alert_name, zone=display_zone)
@@ -674,6 +715,8 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                 else:
                     # Unknown person alerts — suppressed during crowd + grace
                     sideways_suppressed = False
+
+                    # Check 1: Is a known guard's track centroid nearby?
                     for tid, tbox in tracked_objects.items():
                         if tid == track_id:
                             continue
@@ -684,13 +727,23 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                                 sideways_suppressed = True
                                 break
 
-                    # NEW: If only 1 person in frame AND a guard was recently seen,
-                    # this is almost certainly the same guard turned sideways
+                    # Check 2: Only 1 person + guard was recently seen
                     if (not sideways_suppressed
                             and len(tracked_objects) == 1
                             and last_seen_guard_name != "Post"
                             and (now - last_alert_time.get("last_guard_seen_at", 0)) < SINGLE_PERSON_GRACE):
                         sideways_suppressed = True
+
+                    # Check 3: This track_id recently HAD a known identity
+                    # (face was recognized before but now lost — same person turned)
+                    if (not sideways_suppressed
+                            and track_id in track_birth
+                            and (now - track_birth[track_id]) < 5.0):
+                        # Track is very new (< 5s) — might be a re-registered track
+                        # from a guard who just turned. Suppress if guard was just seen.
+                        if (last_seen_guard_name != "Post"
+                                and (now - last_alert_time.get("last_guard_seen_at", 0)) < SINGLE_PERSON_GRACE):
+                            sideways_suppressed = True
 
                     if not is_crowd and not in_post_crowd_grace and not sideways_suppressed:
                         slot_age = now - slot_birth.get(alert_name, now)
@@ -721,7 +774,7 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                     last_alert_time["post_missing"] = now
 
             # ── Stats ─────────────────────────────────────────────────────────
-            streamer.update_stats(
+            effective_streamer.update_stats(
                 guards_detected=len(active_guard_ids),
                 active_violations=len(active_violations),
             )
@@ -740,10 +793,10 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                           (0,255,255) if "TEMP" in post_status else (0,0,255))
             cv2.putText(frame, post_status, (8,20),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, post_color, 1)
-            cv2.putText(frame, f"FPS:{streamer.fps}", (8,38),
+            cv2.putText(frame, f"FPS:{effective_streamer.fps}", (8,38),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, (160,160,160), 1)
 
-            streamer.push_frame(frame)
+            effective_streamer.push_frame(frame)
 
     except Exception as e:
         import traceback
@@ -767,7 +820,9 @@ def _run_with_restart(source, source_label):
             beh_worker=worker,
             beh_label_cache=beh_label_cache,
             beh_cache_lock=beh_cache_lock,
-            anomaly_det=anomaly_det)
+            anomaly_det=anomaly_det,
+            stop_event=_stop_event,
+            cam_streamer=None)   # None → uses global streamer (single-camera mode)
         if _stop_event.is_set():
             break
         print("[main_web] Restarting in 3s...")
