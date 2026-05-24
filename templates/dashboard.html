@@ -861,6 +861,8 @@
               onclick="switchTab('monitor', this)">Monitor</button>
       <button class="tab-btn" id="tab-btn-analytics"
               onclick="switchTab('analytics', this)">Analytics</button>
+      <button class="tab-btn" id="tab-btn-system"
+              onclick="switchTab('system', this)">System Log</button>
     </nav>
 
     <div class="cam-label" id="cam-label">Camera 0</div>
@@ -1099,6 +1101,27 @@
     </div>
 
   </div><!-- /view-analytics -->
+
+  <!-- ═══════════════════════════════════════════════════════
+       SYSTEM LOG TAB
+  ═══════════════════════════════════════════════════════ -->
+  <div class="analytics-panel" id="view-system" style="display:none">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+      <div style="font-family:var(--mono);font-size:11px;letter-spacing:0.1em;color:var(--muted);text-transform:uppercase;">
+        System Log — last 50 entries
+      </div>
+      <button onclick="loadSystemLog()" style="font-family:var(--mono);font-size:10px;
+        padding:3px 12px;border:1px solid var(--border2);background:transparent;
+        color:var(--muted);border-radius:3px;cursor:pointer;">Refresh</button>
+    </div>
+    <div id="system-log-box" style="
+      background:var(--surface);border:1px solid var(--border);border-radius:4px;
+      padding:12px 16px;font-family:var(--mono);font-size:11px;line-height:1.7;
+      color:var(--text);overflow-y:auto;max-height:520px;white-space:pre-wrap;
+      word-break:break-all;">
+      <span style="color:var(--muted);">Click Refresh to load system log...</span>
+    </div>
+  </div><!-- /view-system -->
 
 </div><!-- /shell -->
 
@@ -1392,6 +1415,41 @@ function showToast(msg, isDanger) {
 }
 
 // ── Utils ──────────────────────────────────────────────────────
+// ── System log ─────────────────────────────────────────────────
+function loadSystemLog() {
+  const box = document.getElementById('system-log-box');
+  box.textContent = 'Loading...';
+  fetch('/api/perf')
+    .then(r => r.json())
+    .then(d => {
+      const lines = d.log_lines || [];
+      if (!lines.length) {
+        box.innerHTML = '<span style="color:var(--muted);">No log entries yet. '
+          + 'Logs appear after ~60s of runtime.</span>';
+        return;
+      }
+      // Color-code log levels
+      box.innerHTML = lines.map(line => {
+        let color = 'var(--text)';
+        if (line.includes('] ERROR   ') || line.includes('] CRITICAL'))
+          color = 'var(--danger)';
+        else if (line.includes('] WARNING '))
+          color = '#f59e0b';
+        else if (line.includes('] DEBUG   '))
+          color = 'var(--muted)';
+        else if (line.includes('] INFO    '))
+          color = 'var(--ok)';
+        return `<span style="color:${color}">${escHtml(line)}</span>`;
+      }).join('\n');
+      // Scroll to bottom
+      box.scrollTop = box.scrollHeight;
+    })
+    .catch(e => {
+      box.innerHTML = '<span style="color:var(--danger);">Failed to load log: '
+        + escHtml(String(e)) + '</span>';
+    });
+}
+
 // ── Multi-camera support ────────────────────────────────────────
 let currentCamId = null;
 
@@ -1458,14 +1516,16 @@ function switchTab(tab, btn) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
 
+  const isMonitor   = tab === 'monitor';
   const isAnalytics = tab === 'analytics';
-  document.getElementById('view-monitor').style.display   = isAnalytics ? 'none' : '';
-  document.getElementById('view-analytics').style.display = isAnalytics ? ''     : 'none';
+  const isSystem    = tab === 'system';
 
-  // Monitor tab: body locked (MJPEG feed fills the frame)
-  // Analytics tab: body scrollable so content is reachable at any zoom
-  document.documentElement.style.overflow = isAnalytics ? 'auto' : 'hidden';
-  document.body.style.overflow            = isAnalytics ? 'auto' : 'hidden';
+  document.getElementById('view-monitor').style.display   = isMonitor   ? '' : 'none';
+  document.getElementById('view-analytics').style.display = isAnalytics ? '' : 'none';
+  document.getElementById('view-system').style.display    = isSystem    ? '' : 'none';
+
+  document.documentElement.style.overflow = isMonitor ? 'hidden' : 'auto';
+  document.body.style.overflow            = isMonitor ? 'hidden' : 'auto';
 
   if (isAnalytics) {
     loadAnalytics();

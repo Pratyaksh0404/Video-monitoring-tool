@@ -105,5 +105,6 @@ email:
     - Fire / Smoke Detected
     - Fight / Violence Detected
     - Guard Under Attack
+    - Guard Sleeping
     - Guard Missing
   cooldown: 60            # seconds between emails of same type (1 min)

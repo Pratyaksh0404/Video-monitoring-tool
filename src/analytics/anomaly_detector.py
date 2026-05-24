@@ -3,6 +3,8 @@ import shutil
 import threading
 import queue
 import time
+import cv2
+import numpy as np
 
 WEAPON_MODEL_REPO = "Subh775/Threat-Detection-YOLOv8n"
 WEAPON_MODEL_FILE = "weights/best.pt"
@@ -10,11 +12,19 @@ WEAPON_CONFIDENCE = 0.75
 WEAPON_EXCLUDED   = {"grenade", "Grenade", "bomb", "Bomb",
                      "explosion", "Explosion"}
 
-FIRE_CONFIDENCE   = 0.50
+FIRE_CONFIDENCE       = 0.50   # min confidence for fire/flames class
+SMOKE_CONFIDENCE      = 0.75   # higher threshold for smoke class (more false positives)
 FIRE_VALID_CLASSES = {"fire", "Fire", "smoke", "Smoke",
                       "flames", "Flames", "wildfire", "Wildfire"}
 FIRE_REJECT_CLASSES = {"gun", "Gun", "knife", "Knife",
                        "grenade", "Grenade", "explosion", "Explosion"}
+
+# ── Fire color pre-filter thresholds ──────────────────────────────────────
+# Minimum fraction of the DETECTION BOUNDING BOX that must contain
+# fire-colored pixels (red/orange/yellow in HSV) for the detection to pass.
+# Lighting blur / window glare is gray-white → fails this check.
+# Real fire is strongly orange-red → passes easily.
+FIRE_COLOR_MIN_FRACTION = 0.08
 
 LOCAL_FIRE_MODEL_NAME = "fire_model.pt"
 
@@ -32,11 +42,55 @@ _CACHE_DIR = os.path.join(_HERE, "..", "..", "model_cache", "yolo_threat")
 
 
 def _purge_stale_subdirs():
-    """Remove leftover hf_hub_download subdirectories that cause cache collisions."""
     for d in ("weights", "runs", "_tmp_download"):
         p = os.path.join(_CACHE_DIR, d)
         if os.path.isdir(p):
             shutil.rmtree(p, ignore_errors=True)
+
+
+def _has_fire_colors(frame, box_xyxy) -> bool:
+    """
+    Check if the region inside box_xyxy contains enough fire-colored pixels.
+    Returns True if the region looks like actual fire/flames (red-orange-yellow).
+    Returns False for gray/white regions (lighting, blur, glare).
+    """
+    try:
+        h_img, w_img = frame.shape[:2]
+        x1 = max(0, int(box_xyxy[0]))
+        y1 = max(0, int(box_xyxy[1]))
+        x2 = min(w_img, int(box_xyxy[2]))
+        y2 = min(h_img, int(box_xyxy[3]))
+        region = frame[y1:y2, x1:x2]
+
+        if region.size == 0:
+            return True  # can't check, allow through
+
+        hsv = cv2.cvtColor(region, cv2.COLOR_BGR2HSV)
+
+        # Fire/flame colors in HSV:
+        # Red-orange: H=0-25, high S, high V
+        # Yellow-orange: H=20-35, high S, high V
+        # Deep red wraps: H=170-180
+        lower_fire1 = np.array([0,  100,  80], dtype=np.uint8)
+        upper_fire1 = np.array([35, 255, 255], dtype=np.uint8)
+        lower_fire2 = np.array([170, 100,  80], dtype=np.uint8)
+        upper_fire2 = np.array([180, 255, 255], dtype=np.uint8)
+
+        mask1 = cv2.inRange(hsv, lower_fire1, upper_fire1)
+        mask2 = cv2.inRange(hsv, lower_fire2, upper_fire2)
+        fire_mask = cv2.bitwise_or(mask1, mask2)
+
+        fire_pixels = cv2.countNonZero(fire_mask)
+        total_pixels = region.shape[0] * region.shape[1]
+
+        if total_pixels == 0:
+            return True
+
+        fraction = fire_pixels / total_pixels
+        return fraction >= FIRE_COLOR_MIN_FRACTION
+
+    except Exception:
+        return True  # on any error, allow through
 
 
 class AnomalyDetector:
@@ -56,7 +110,7 @@ class AnomalyDetector:
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
 
-    # ── Public API ────────────────────────────────────────────────────────────
+    # ── Public API ────────────────────────────────────────────────────────
 
     def submit(self, track_id, frame_crop):
         if not self._ready or frame_crop is None or frame_crop.size == 0:
@@ -88,7 +142,7 @@ class AnomalyDetector:
     def stop(self):
         self._stopped = True
 
-    # ── Model loading ─────────────────────────────────────────────────────────
+    # ── Model loading ─────────────────────────────────────────────────────
 
     def _flat_path(self, repo_id, filename):
         os.makedirs(_CACHE_DIR, exist_ok=True)
@@ -116,7 +170,6 @@ class AnomalyDetector:
             return None
 
     def _is_valid_fire_model(self, model):
-        """Returns True if model has fire/smoke classes, False if it's a weapon model."""
         names = list(model.names.values())
         names_lower = {n.lower() for n in names}
         is_weapon = names_lower & {c.lower() for c in FIRE_REJECT_CLASSES}
@@ -131,7 +184,6 @@ class AnomalyDetector:
         local_path = os.path.join(_CACHE_DIR, LOCAL_FIRE_MODEL_NAME)
         if not os.path.exists(local_path):
             return False
-
         print(f"[AnomalyDetector] Found local fire model: {LOCAL_FIRE_MODEL_NAME}")
         try:
             from ultralytics import YOLO
@@ -144,8 +196,7 @@ class AnomalyDetector:
                       f"Classes: {list(m.names.values())}")
                 return True
             else:
-                print(f"[AnomalyDetector] ✗ Local fire model rejected "
-                      f"(wrong classes). Rename correct model to fire_model.pt")
+                print(f"[AnomalyDetector] ✗ Local fire model rejected.")
                 return False
         except Exception as e:
             print(f"[AnomalyDetector] ✗ Local fire model load failed: {e}")
@@ -153,11 +204,10 @@ class AnomalyDetector:
 
     def _load_models(self):
         _purge_stale_subdirs()
-
         try:
             from ultralytics import YOLO
 
-            # ── Weapon model ──────────────────────────────────────────────────
+            # ── Weapon model ──────────────────────────────────────────────
             path = self._try_hf_download(WEAPON_MODEL_REPO, WEAPON_MODEL_FILE)
             if path:
                 self._weapon_model = YOLO(path)
@@ -169,10 +219,8 @@ class AnomalyDetector:
             else:
                 print("[AnomalyDetector] ✗ Weapon model unavailable.")
 
-            # ── Fire model — check local file FIRST ───────────────────────────
+            # ── Fire model ────────────────────────────────────────────────
             fire_loaded = self._try_load_local_fire_model()
-
-            # ── Fire model — try HuggingFace candidates (fallback) ────────────
             if not fire_loaded:
                 for repo_id, filename in FIRE_MODEL_CANDIDATES:
                     path = self._try_hf_download(repo_id, filename)
@@ -185,17 +233,13 @@ class AnomalyDetector:
                                 self._fire_ready  = True
                                 fire_loaded       = True
                                 print(f"[AnomalyDetector] ✓ Fire detector ready "
-                                      f"({repo_id}). Classes: "
-                                      f"{list(m.names.values())}")
+                                      f"({repo_id}).")
                                 break
                         except Exception as e:
                             print(f"[AnomalyDetector] Load failed ({repo_id}): {e}")
-
             if not fire_loaded:
                 print("[AnomalyDetector] ✗ Fire detection disabled.")
-                print("[AnomalyDetector] → To enable: download a YOLOv8 fire model,")
-                print(f"[AnomalyDetector] → rename it to '{LOCAL_FIRE_MODEL_NAME}',")
-                print(f"[AnomalyDetector] → place it in: {_CACHE_DIR}")
+                print(f"[AnomalyDetector] → Place fire_model.pt in: {_CACHE_DIR}")
 
         except ImportError:
             print("[AnomalyDetector] ultralytics not installed.")
@@ -204,12 +248,11 @@ class AnomalyDetector:
             print(f"[AnomalyDetector] Load error: {e}")
             traceback.print_exc()
 
-    # ── Inference ─────────────────────────────────────────────────────────────
+    # ── Inference ─────────────────────────────────────────────────────────
 
     def _analyze_weapon(self, track_id, crop):
         label = "NORMAL"; threat = None; score = 0.0; is_alert = False
-        boxes = []  # NEW: store bounding box coordinates
-
+        boxes = []
         if self._weapon_model:
             try:
                 results = self._weapon_model(crop, verbose=False)[0]
@@ -219,21 +262,19 @@ class AnomalyDetector:
                     if cls in WEAPON_EXCLUDED:
                         continue
                     if conf >= WEAPON_CONFIDENCE:
-                        # Extract bounding box coordinates
                         xyxy = box.xyxy[0].cpu().numpy().astype(int)
-                        bx1, by1, bx2, by2 = int(xyxy[0]), int(xyxy[1]), int(xyxy[2]), int(xyxy[3])
-                        boxes.append((bx1, by1, bx2, by2))
-
+                        boxes.append((int(xyxy[0]), int(xyxy[1]),
+                                      int(xyxy[2]), int(xyxy[3])))
                         if conf > score:
-                            score = conf; threat = cls; label = "WEAPON"; is_alert = True
+                            score = conf; threat = cls
+                            label = "WEAPON"; is_alert = True
             except Exception:
                 pass
-
         with self._lock:
             self._results[track_id] = {
                 "label": label, "threat": threat,
                 "score": score, "is_alert": is_alert,
-                "boxes": boxes,           # NEW: bounding boxes for drawing
+                "boxes": boxes,
                 "timestamp": time.time(),
             }
         if is_alert:
@@ -249,11 +290,31 @@ class AnomalyDetector:
                     cls  = results.names[int(box.cls[0])]
                     if cls not in FIRE_VALID_CLASSES:
                         continue
-                    if conf >= FIRE_CONFIDENCE and conf > score:
-                        score = conf; threat = cls.capitalize()
-                        label = "FIRE"; is_alert = True
+
+                    # Per-class confidence threshold
+                    cls_lower = cls.lower()
+                    is_smoke_class = cls_lower in ("smoke",)
+                    min_conf = SMOKE_CONFIDENCE if is_smoke_class else FIRE_CONFIDENCE
+                    if conf < min_conf:
+                        continue
+
+                    # ── Color pre-filter for fire/flames classes ─────────
+                    # Smoke class is gray so skip color check for it
+                    # Fire/flames must have red-orange pixels (rejects lighting)
+                    if not is_smoke_class:
+                        xyxy = box.xyxy[0].cpu().numpy()
+                        if not _has_fire_colors(frame, xyxy):
+                            continue
+
+                    if conf > score:
+                        score = conf
+                        threat = cls.capitalize()
+                        label = "FIRE"
+                        is_alert = True
+
             except Exception as e:
                 print(f"[AnomalyDetector] Fire inference error: {e}")
+
         with self._lock:
             self._fire_result = {
                 "label": label, "threat": threat,
@@ -264,7 +325,6 @@ class AnomalyDetector:
             print(f"[AnomalyDetector] FIRE: {threat} ({score:.0%})")
 
     def clear_result(self, track_id):
-        """Clear stale weapon result for a track (call when track disappears)."""
         with self._lock:
             self._results.pop(track_id, None)
 

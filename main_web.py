@@ -24,6 +24,11 @@ from analytics.unknown_tracker import UnknownTracker
 from alerts.alert_manager import AlertManager
 from analytics.anomaly_detector import AnomalyDetector
 from video_streamer import streamer
+from utils.logger import get_logger
+from utils.timer import PipelineTimer
+from analytics.smoking_detector import SmokingDetector
+
+log = get_logger("main_web")
 
 # ── Config loader ─────────────────────────────────────────────────────────────
 def _load_config():
@@ -36,13 +41,12 @@ def _load_config():
             import yaml
             with open(config_path, "r") as f:
                 cfg = yaml.safe_load(f) or {}
-            print(f"[main_web] Loaded config from {config_path}")
+            log.info(f"Loaded config from {config_path}")
             return cfg
         except ImportError:
-            print("[main_web] PyYAML not installed — using defaults. "
-                  "Install with: pip install pyyaml")
+            log.warning("PyYAML not installed — using defaults. pip install pyyaml")
         except Exception as e:
-            print(f"[main_web] Config load error: {e} — using defaults")
+            log.error(f"Config load error: {e} — using defaults")
     return {}
 
 _CFG = _load_config()
@@ -102,7 +106,7 @@ def box_centroid(box):
 def load_enrolled_faces(faces_dir):
     known_encodings, known_names = [], []
     if not os.path.exists(faces_dir):
-        print(f"[FaceRecognizer] WARNING: {faces_dir} not found")
+        log.warning(f"enrolled_faces dir not found: {faces_dir}")
         return known_encodings, known_names
     for person_name in os.listdir(faces_dir):
         person_dir = os.path.join(faces_dir, person_name)
@@ -118,7 +122,7 @@ def load_enrolled_faces(faces_dir):
                     known_names.append(person_name)
             except Exception:
                 pass
-    print(f"[FaceRecognizer] Loaded {len(known_encodings)} encodings for "
+    log.info(f"Face recognizer: {len(known_encodings)} encodings for "
           f"{len(set(known_names))} identities: {sorted(set(known_names))}")
     return known_encodings, known_names
 
@@ -225,7 +229,7 @@ class BehaviorWorker:
             from analytics.behavior_classifier import BehaviorClassifier
             self._classifier = BehaviorClassifier(device="cpu")
             self._ready = True
-            print("[BehaviorWorker] CLIP model ready.")
+            log.info("CLIP behavior model ready.")
         except Exception as e:
             print(f"[BehaviorWorker] Failed: {e}")
             return
@@ -277,7 +281,7 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
     try:
         stream = VideoStreamReader(source=source)
     except RuntimeError as e:
-        print(f"[main_web] Camera error: {e}")
+        log.error(f"Camera error: {e}")
         time.sleep(2)
         return
 
@@ -293,18 +297,20 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
     loitering_det   = LoiteringDetector()
     fight_det       = FightDetector()
     unknown_tracker = UnknownTracker()
+    smoking_det     = SmokingDetector()
+    timer           = PipelineTimer()
 
-    print("[main_web] Waiting for first frame...")
+    log.info("Waiting for first frame...")
     for _ in range(50):
         if stream.read_frame() is not None:
             break
         time.sleep(0.1)
     else:
-        print("[main_web] Camera not responding — aborting.")
+        log.error("Camera not responding — aborting.")
         stream.release()
         return
 
-    print("[main_web] Camera ready.")
+    log.info("Camera ready.")
     frame_count      = 0
     behavior_cache   = {}
     identity_memory  = {}
@@ -353,15 +359,17 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                 h, w = frame.shape[:2]
                 post_area     = (0, 0, w, h)
                 zone_detector = TrajectoryTracker(roi=post_area, grid_size=2)
-                print(f"[main_web] Frame: {w}x{h}, POST_AREA={post_area}")
+                log.info(f"Frame: {w}x{h}, POST_AREA={post_area}")
 
             # ── Detection ────────────────────────────────────────────────────
+            timer.start("person_detection")
             detections   = detector.detect(frame)
             person_boxes = []
             for (x1, y1, x2, y2, conf) in detections:
                 if (x2-x1) < MIN_PERSON_WIDTH or (y2-y1) < MIN_PERSON_HEIGHT:
                     continue
                 person_boxes.append((x1, y1, x2, y2))
+            timer.stop("person_detection")
 
             valid_centroids = [box_centroid(b) for b in person_boxes]
 
@@ -384,6 +392,7 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                 loitering_det.reset(dead_id)
                 fight_det.reset(dead_id)
                 beh_engine.reset(dead_id)
+                smoking_det.reset(dead_id)
                 last_pos = track_last_pos.pop(dead_id, None)
                 unknown_tracker.on_track_lost(dead_id, last_pos)
                 if anomaly_det:
@@ -391,8 +400,10 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
 
             # ── Face recognition every 8 frames ──────────────────────────────
             if frame_count % 8 == 0:
+                timer.start("face_recognition")
                 face_results = recognize_faces_in_frame(
                     frame, known_encodings, known_names)
+                timer.stop("face_recognition")
 
             # ─────────────────────────────────────────────────────────────────
             # FRAME-LEVEL DETECTIONS
@@ -632,7 +643,7 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                             and latest_zone is not None
                             and last_patrol_alerted_zone.get(guard_id) != latest_zone):
                         short_path = id_traj.get_path_short(guard_id, PATROL_DISPLAY_ZONES)
-                        print(f"[PATROL] {guard_id} — {short_path}")
+                        log.info(f"PATROL {guard_id} — {short_path}")
                         last_patrol_alerted_zone[guard_id] = latest_zone
                         alert_manager.send_alert(
                             f"Patrol: {short_path}", guard_id, zone=display_zone)
@@ -693,14 +704,26 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                         send_alert(f"sleep:{guard_id}", "Guard Sleeping")
                     elif "CONFIRMED_PHONE_USE" in final_state:
                         send_alert(f"phone:{guard_id}", "Phone Usage")
-                    # SMOKING: DISABLED — CLIP produces too many false positives.
-                    # Re-enable when dedicated YOLOv8 cigarette model is integrated.
-                    elif "CONFIRMED_SMOKING" in final_state and not is_moving:
-                         send_alert(f"smoking:{guard_id}", "Guard Smoking")
+
+                    # SMOKING — dual-layer: CLIP confirmed OR SmokingDetector confirms
+                    # SmokingDetector uses skin detection + 15s sustained hand-near-mouth
+                    # It's more reliable than CLIP alone for this specific behavior
+                    else:
+                        with beh_cache_lock:
+                            current_clip_label = beh_label_cache.get(track_id, "ANALYZING")
+                        smoke_state = smoking_det.update(
+                            track_id, frame, person_box, centroid,
+                            person_speed=fight_det.speed(track_id),
+                            clip_label=current_clip_label,
+                        )
+                        clip_smoking = "CONFIRMED_SMOKING" in final_state and not is_moving
+                        cv_smoking   = smoke_state == "CONFIRMED_SMOKING"
+                        if clip_smoking or cv_smoking:
+                            send_alert(f"smoking:{guard_id}", "Guard Smoking")
 
                     # IDLE: InactivityMonitor only, with startup grace + long cooldown
                     # Suppressed for first IDLE_STARTUP_GRACE seconds after pipeline starts
-                    elif (not is_moving and activity_status == "INACTIVE"
+                    if (not is_moving and activity_status == "INACTIVE"
                           and (now - pipeline_start_time) > IDLE_STARTUP_GRACE):
                         idle_key = f"idle:{guard_id}"
                         if now - last_alert_time.get(idle_key, 0) > IDLE_COOLDOWN:
@@ -798,15 +821,20 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
 
             effective_streamer.push_frame(frame)
 
+            # Log performance stats every 300 frames (~55s)
+            if frame_count % 300 == 0 and frame_count > 0:
+                log.debug(f"Perf stats | {timer.summary()}")
+
     except Exception as e:
         import traceback
-        print(f"[main_web] CRASH: {e}"); traceback.print_exc()
+        log.error(f"Pipeline CRASH: {e}", exc_info=True)
     finally:
         stream.release()
         loitering_det.reset_all()
         fight_det.reset()
         unknown_tracker.reset()
-        print("[main_web] Loop ended.")
+        smoking_det.reset()
+        log.info("Pipeline loop ended.")
 
 
 def _run_with_restart(source, source_label):
@@ -825,7 +853,7 @@ def _run_with_restart(source, source_label):
             cam_streamer=None)   # None → uses global streamer (single-camera mode)
         if _stop_event.is_set():
             break
-        print("[main_web] Restarting in 3s...")
+        log.info("Restarting pipeline in 3s...")
         time.sleep(3)
 
     worker.stop()

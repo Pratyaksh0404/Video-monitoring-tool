@@ -1,116 +1,158 @@
 import time
+import math
 
 
 class UnknownTracker:
-    SPATIAL_TOLERANCE    = 200    # px — how close centroids must be to re-link
-    TIME_TOLERANCE       = 30.0   # seconds — how long we remember a lost slot
-    ALERT_SUPPRESS_SECS  = 60.0   # seconds — minimum gap between alerts per slot
+    """
+    Assigns stable 'Unknown_N' labels to unrecognized persons.
+
+    Slot reuse logic:
+    - If new centroid is within SPATIAL_TOLERANCE px of a recently-seen
+      slot's last centroid AND the slot died within TIME_TOLERANCE seconds,
+      reuse that slot number.
+    - Otherwise assign a new slot, recycling numbers above MAX_SLOT_NUMBER.
+    """
+
+    SPATIAL_TOLERANCE   = 200    # px — slot reuse proximity
+    TIME_TOLERANCE      = 30.0   # seconds — slot memory after track dies
+    ALERT_SUPPRESS_SECS = 60.0   # seconds — minimum gap between alerts per slot
+    MAX_SLOT_NUMBER     = 10     # slot numbers never exceed this
 
     def __init__(self):
-        # track_id → slot_name  (active tracks)
-        self._active: dict = {}
+        # track_id → slot name e.g. "Unknown_3"
+        self._track_to_slot: dict = {}
+        # slot_name → { centroid, died_at, last_alert_at }
+        self._slot_memory: dict = {}
+        # slot_name → track_id currently using it (None if free)
+        self._active_slots: dict = {}
+        # counter for next slot number (wraps at MAX_SLOT_NUMBER)
+        self._next_slot = 1
 
-        # slot_name → {"centroid": (x,y), "lost_at": float}  (recently lost)
-        self._lost: dict = {}
-
-        # slot_name → last time alert was fired for this slot
-        self._alerted: dict = {}
-
-        # track_id → last known centroid (so on_track_lost has position)
-        self._last_centroid: dict = {}
-
-        self._next_slot = 1   # monotonic counter for new slot IDs
-
-    # ── Public API ────────────────────────────────────────────────────────────
+    # ── Public API ────────────────────────────────────────────────────────
 
     def get_or_assign(self, track_id: int, centroid: tuple) -> str:
         """
-        Return the stable slot name for this unknown track.
-        Creates a new slot or reuses a recently-lost nearby slot.
+        Return existing slot for track_id, or assign a new one.
+        Reuses nearby recently-dead slots when possible.
         """
-        # Track the latest centroid for this track_id
-        self._last_centroid[track_id] = centroid
+        if track_id in self._track_to_slot:
+            return self._track_to_slot[track_id]
 
-        # Already assigned this frame
-        if track_id in self._active:
-            return self._active[track_id]
-
-        # Try to match to a recently-lost slot by spatial proximity
-        slot = self._find_nearby_slot(centroid)
+        # Try to reuse a dead slot at similar location
+        slot = self._find_reusable_slot(centroid)
 
         if slot is None:
-            slot = f"Unknown_{self._next_slot}"
-            self._next_slot += 1
+            slot = self._allocate_slot()
 
-        self._active[track_id] = slot
-        self._lost.pop(slot, None)   # slot is active again, remove from lost
+        self._track_to_slot[track_id] = slot
+        self._active_slots[slot] = track_id
+
+        # Initialize slot memory if new
+        if slot not in self._slot_memory:
+            self._slot_memory[slot] = {
+                "centroid":      centroid,
+                "died_at":       0.0,
+                "last_alert_at": 0.0,
+            }
+
         return slot
 
-    def on_track_lost(self, track_id: int, last_centroid: tuple = None):
-        """Call when CentroidTracker deregisters a track."""
-        slot = self._active.pop(track_id, None)
-        # Use provided centroid, or fall back to last recorded centroid
-        pos = last_centroid or self._last_centroid.pop(track_id, None)
-        if slot and pos:
-            self._lost[slot] = {
-                "centroid": pos,
-                "lost_at":  time.time(),
-            }
-        elif track_id in self._last_centroid:
-            self._last_centroid.pop(track_id, None)
+    def get_slot(self, track_id: int):
+        """Return slot name for track, or None if not assigned."""
+        return self._track_to_slot.get(track_id)
 
-    def can_alert(self, slot_name: str) -> bool:
-        """
-        Returns True if this slot is allowed to fire an alert now.
-        Call this before firing 'Unknown Person Detected'.
-        If True, you must call mark_alerted() to register the alert.
-        """
-        last = self._alerted.get(slot_name, 0)
-        return (time.time() - last) >= self.ALERT_SUPPRESS_SECS
+    def on_track_lost(self, track_id: int, last_centroid=None):
+        """Call when a track is deregistered."""
+        slot = self._track_to_slot.pop(track_id, None)
+        if slot:
+            self._active_slots.pop(slot, None)
+            if slot in self._slot_memory:
+                self._slot_memory[slot]["died_at"] = time.time()
+                if last_centroid:
+                    self._slot_memory[slot]["centroid"] = last_centroid
 
-    def mark_alerted(self, slot_name: str):
-        """Record that an alert was just fired for this slot."""
-        self._alerted[slot_name] = time.time()
+    def can_alert(self, slot: str) -> bool:
+        """Return True if enough time has passed since last alert for this slot."""
+        mem = self._slot_memory.get(slot)
+        if not mem:
+            return True
+        return (time.time() - mem["last_alert_at"]) >= self.ALERT_SUPPRESS_SECS
+
+    def mark_alerted(self, slot: str):
+        """Record that an alert just fired for this slot."""
+        if slot in self._slot_memory:
+            self._slot_memory[slot]["last_alert_at"] = time.time()
 
     def reset(self):
-        """Clear all state — call on source switch."""
-        self._active.clear()
-        self._lost.clear()
-        self._alerted.clear()
-        self._last_centroid.clear()
-        # Keep _next_slot to avoid reusing old IDs
+        """Clear all state."""
+        self._track_to_slot.clear()
+        self._slot_memory.clear()
+        self._active_slots.clear()
+        self._next_slot = 1
 
-    # ── Internal ──────────────────────────────────────────────────────────────
+    # ── Internal ──────────────────────────────────────────────────────────
 
-    def _find_nearby_slot(self, centroid: tuple):
+    def _find_reusable_slot(self, centroid: tuple):
         """
-        Return the name of the nearest recently-lost slot within tolerance,
-        or None if none found. Also prunes expired slots.
+        Look for a recently-dead slot whose last centroid is within
+        SPATIAL_TOLERANCE pixels and died within TIME_TOLERANCE seconds.
+        Returns slot name or None.
         """
-        now      = time.time()
-        best     = None
+        now = time.time()
+        best_slot = None
         best_dist = float("inf")
 
-        expired = []
-        for slot, info in self._lost.items():
-            age = now - info["lost_at"]
-            if age > self.TIME_TOLERANCE:
-                expired.append(slot)
+        for slot, mem in self._slot_memory.items():
+            # Skip active slots
+            if self._active_slots.get(slot) is not None:
                 continue
-
-            cx, cy = centroid
-            lx, ly = info["centroid"]
-            dist = ((cx-lx)**2 + (cy-ly)**2) ** 0.5
-
+            # Skip if too old
+            if mem["died_at"] == 0.0:
+                continue
+            if (now - mem["died_at"]) > self.TIME_TOLERANCE:
+                continue
+            # Check proximity
+            sc = mem.get("centroid")
+            if sc is None:
+                continue
+            dist = math.dist(centroid, sc)
             if dist < self.SPATIAL_TOLERANCE and dist < best_dist:
                 best_dist = dist
-                best      = slot
+                best_slot = slot
 
-        for s in expired:
-            self._lost.pop(s, None)
+        return best_slot
 
-        return best
+    def _allocate_slot(self) -> str:
+        """
+        Allocate a slot number, recycling if we've exceeded MAX_SLOT_NUMBER.
+        Strategy: try numbers 1..MAX_SLOT_NUMBER in order, skip any that
+        are currently active. If all active, evict the one with oldest
+        last_alert_at (least recently used).
+        """
+        # Try to find a free slot number (not currently active)
+        for _ in range(self.MAX_SLOT_NUMBER):
+            candidate = f"Unknown_{self._next_slot}"
+            self._next_slot = (self._next_slot % self.MAX_SLOT_NUMBER) + 1
 
-    def get_slot(self, track_id: int):
-        """Return current slot for a track, or None if not assigned."""
-        return self._active.get(track_id)
+            if self._active_slots.get(candidate) is None:
+                return candidate
+
+        # All slots active — evict the one with oldest last_alert_at
+        oldest_slot = None
+        oldest_time = float("inf")
+        for slot, track_id in list(self._active_slots.items()):
+            mem = self._slot_memory.get(slot, {})
+            lat = mem.get("last_alert_at", 0.0)
+            if lat < oldest_time:
+                oldest_time = lat
+                oldest_slot = slot
+
+        if oldest_slot:
+            # Evict: remove the old track→slot mapping
+            old_track = self._active_slots.pop(oldest_slot, None)
+            if old_track is not None:
+                self._track_to_slot.pop(old_track, None)
+            return oldest_slot
+
+        # Fallback (should never happen)
+        return f"Unknown_{self._next_slot}"

@@ -29,6 +29,9 @@ from werkzeug.utils import secure_filename
 import main_web
 from video_streamer import streamer
 from alerts.alert_manager import alert_queue
+from utils.logger import get_logger
+
+log = get_logger("flask_app")
 
 # ── Multi-camera + Email setup ────────────────────────────────────────────────
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -324,6 +327,26 @@ def api_config():
         except Exception as e:
             return jsonify({"error": str(e)}), 500
     return jsonify({"error": "Config file not found"}), 404
+
+
+@app.route("/api/perf")
+def api_perf():
+    """Return pipeline performance stats (latency per module)."""
+    # Read last N lines of system.log for display
+    log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "src", "logs", "system.log")
+    recent_logs = []
+    if os.path.exists(log_path):
+        try:
+            with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()
+            recent_logs = [l.rstrip() for l in lines[-50:]]
+        except Exception:
+            pass
+    return jsonify({
+        "log_lines": recent_logs,
+        "log_path":  log_path,
+    })
 
 
 # ── Multi-camera API ─────────────────────────────────────────────────────────
