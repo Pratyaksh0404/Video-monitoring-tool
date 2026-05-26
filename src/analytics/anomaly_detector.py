@@ -12,8 +12,9 @@ WEAPON_CONFIDENCE = 0.75
 WEAPON_EXCLUDED   = {"grenade", "Grenade", "bomb", "Bomb",
                      "explosion", "Explosion"}
 
-FIRE_CONFIDENCE       = 0.50   # min confidence for fire/flames class
-SMOKE_CONFIDENCE      = 0.75   # higher threshold for smoke class (more false positives)
+FIRE_CONFIDENCE       = 0.55   # min confidence for fire/flames class
+SMOKE_CONFIDENCE      = 0.85   # very high threshold for smoke — most false positives
+DISABLE_SMOKE_CLASS   = True   # set True to ignore smoke class entirely (indoor use)
 FIRE_VALID_CLASSES = {"fire", "Fire", "smoke", "Smoke",
                       "flames", "Flames", "wildfire", "Wildfire"}
 FIRE_REJECT_CLASSES = {"gun", "Gun", "knife", "Knife",
@@ -291,9 +292,14 @@ class AnomalyDetector:
                     if cls not in FIRE_VALID_CLASSES:
                         continue
 
-                    # Per-class confidence threshold
                     cls_lower = cls.lower()
                     is_smoke_class = cls_lower in ("smoke",)
+
+                    # Indoor use: disable smoke class entirely to stop lighting false positives
+                    if is_smoke_class and DISABLE_SMOKE_CLASS:
+                        continue
+
+                    # Per-class confidence threshold
                     min_conf = SMOKE_CONFIDENCE if is_smoke_class else FIRE_CONFIDENCE
                     if conf < min_conf:
                         continue
@@ -308,7 +314,7 @@ class AnomalyDetector:
 
                     if conf > score:
                         score = conf
-                        threat = cls.capitalize()
+                        threat = "Fire"  # always label as Fire (smoke class disabled)
                         label = "FIRE"
                         is_alert = True
 

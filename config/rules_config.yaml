@@ -1,11 +1,8 @@
-# Edit these values to tune detection thresholds without code changes.
-# ─────────────────────────────────────────────────────────────────
-
 # ── Person Detection ──────────────────────────────────────────────
 person:
   min_height: 60          # px — ignore tiny detections
   min_width: 30           # px
-  face_tolerance: 0.4     # face_recognition distance threshold (lower = stricter)
+  face_tolerance: 0.5     # face_recognition distance threshold (raised 0.4→0.5 for appearance changes)
 
 # ── Crowd ─────────────────────────────────────────────────────────
 crowd:
@@ -25,11 +22,12 @@ unknown:
 
 # ── Fire / Smoke ──────────────────────────────────────────────────
 fire:
-  min_confidence: 0.70    # per-reading threshold (rolling window is the real guard)
+  min_confidence: 0.55    # per-reading threshold for fire/flames class
   sustain_seconds: 6.0    # time window for hit accumulation
   min_consecutive: 3      # hits needed within sustain_seconds to fire alert
   frame_interval: 20      # run fire model every N frames
   result_max_age: 8.0     # discard fire results older than this (seconds)
+  disable_smoke_class: true  # ignore "smoke" class entirely — too many false positives indoors
 
 # ── Weapons ───────────────────────────────────────────────────────
 weapon:
@@ -107,4 +105,5 @@ email:
     - Guard Under Attack
     - Guard Sleeping
     - Guard Missing
-  cooldown: 60            # seconds between emails of same type (1 min)
+    - Guard Smoking
+  cooldown: 200            # seconds between emails of same type (1 min)

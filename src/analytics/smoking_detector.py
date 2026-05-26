@@ -2,9 +2,9 @@ import cv2
 import numpy as np
 import time
 
-STILL_SECS = 5.0
-CONFIRM_SECS = 15.0
-MOVE_THRESHOLD = 15.0
+STILL_SECS = 4.0        # person must be still this long before check starts
+CONFIRM_SECS = 12.0     # hand-near-mouth must persist this long to confirm
+MOVE_THRESHOLD = 15.0   # px — centroid shift that resets the still timer
 SKIN_MIN_PIXELS = 80
 MOUTH_REGION_TOP = 0.15
 MOUTH_REGION_BOT = 0.45
@@ -13,43 +13,39 @@ MOUTH_REGION_R = 0.75
 
 
 class SmokingDetector:
-    """
-    OpenCV-based smoking detector using skin detection + sustained hand-near-mouth.
-    No ML model required. Works alongside CLIP as a dual-layer check.
-
-    Logic:
-    1. Person must be still for STILL_SECS before checking starts
-    2. Skin pixels detected in mouth region = hand near mouth
-    3. Hand must stay near mouth for CONFIRM_SECS to confirm smoking
-    4. If CLIP says PHONE_USE, skip (hand near face but it's a phone)
-    """
 
     def __init__(self):
+        # keyed on identity NAME, not track_id
         self._states = {}
 
-    def _get_state(self, track_id):
-        if track_id not in self._states:
-            self._states[track_id] = {
+    def _get_state(self, name):
+        if name not in self._states:
+            self._states[name] = {
                 "still_since": 0.0,
                 "hand_since": 0.0,
             }
-        return self._states[track_id]
+        return self._states[name]
 
-    def reset(self, track_id=None):
-        if track_id is None:
+    def reset(self, name=None):
+        """Reset state for a specific identity, or all if name is None."""
+        if name is None:
             self._states.clear()
         else:
-            self._states.pop(track_id, None)
+            self._states.pop(name, None)
 
-    def update(self, track_id, frame, person_box, centroid,
-               person_speed=0.0, clip_label=None):
+    def reset_track(self, track_id):
+        """Called when a track dies — does NOT reset state (state is identity-based)."""
+        pass  # intentionally no-op: state persists across track re-registrations
+
+    def update_by_name(self, name, frame, person_box, person_speed=0.0, clip_label=None):
         """
+        Update smoking state keyed on identity name.
         Returns: 'CONFIRMED_SMOKING', 'POSSIBLE_SMOKING', or 'NORMAL'
         """
         now = time.time()
-        state = self._get_state(track_id)
+        state = self._get_state(name)
 
-        # Phone use gate
+        # Phone use gate — hands near face but it's a phone, not a cigarette
         if clip_label == "PHONE_USE":
             state["hand_since"] = 0.0
             return "NORMAL"
@@ -71,6 +67,7 @@ class SmokingDetector:
             state["hand_since"] = 0.0
             return "NORMAL"
 
+        # Hand is near mouth and person is still
         if state["hand_since"] == 0.0:
             state["hand_since"] = now
 

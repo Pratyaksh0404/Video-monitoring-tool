@@ -58,7 +58,7 @@ def _cfg(section, key, default):
 # ── Thresholds (from config or defaults) ──────────────────────────────────────
 MIN_PERSON_HEIGHT    = _cfg("person", "min_height", 60)
 MIN_PERSON_WIDTH     = _cfg("person", "min_width", 30)
-FACE_TOLERANCE       = _cfg("person", "face_tolerance", 0.4)
+FACE_TOLERANCE       = _cfg("person", "face_tolerance", 0.5)  # raised 0.4→0.5 for appearance variation
 FACE_SCALE           = 0.5
 CROWD_THRESHOLD      = _cfg("crowd", "threshold", 4)
 FILE_PRESENCE_WARMUP = 30
@@ -392,7 +392,7 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                 loitering_det.reset(dead_id)
                 fight_det.reset(dead_id)
                 beh_engine.reset(dead_id)
-                smoking_det.reset(dead_id)
+                # Note: smoking_det state is identity-based, not reset on track death
                 last_pos = track_last_pos.pop(dead_id, None)
                 unknown_tracker.on_track_lost(dead_id, last_pos)
                 if anomaly_det:
@@ -456,12 +456,12 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                         if now - last_alert_time.get("fire", 0) > ALERT_COOLDOWN:
                             t = fire_res.get("threat") or "Fire"
                             alert_manager.send_alert(
-                                f"Fire / Smoke Detected: {t}", "Camera", zone="—")
+                                f"Fire Detected: {t}", "Camera", zone="—")
                             last_alert_time["fire"] = now
                             active_violations.add("Fire")
 
                     cv2.putText(frame,
-                                f"FIRE/SMOKE: {fire_res.get('threat','')} "
+                                f"FIRE DETECTED: {fire_res.get('threat','')} "
                                 f"({score:.0%})",
                                 (10, 65), cv2.FONT_HERSHEY_SIMPLEX,
                                 0.65, (0, 0, 255), 2)
@@ -707,18 +707,21 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
 
                     # SMOKING — dual-layer: CLIP confirmed OR SmokingDetector confirms
                     # SmokingDetector uses skin detection + 15s sustained hand-near-mouth
-                    # It's more reliable than CLIP alone for this specific behavior
+                    # SmokingDetector: keyed on alert_name (identity), not track_id
+                    # This means the timer survives track re-registration when
+                    # the person briefly turns sideways and gets a new track ID
                     else:
                         with beh_cache_lock:
                             current_clip_label = beh_label_cache.get(track_id, "ANALYZING")
-                        smoke_state = smoking_det.update(
-                            track_id, frame, person_box, centroid,
+                        smoke_state = smoking_det.update_by_name(
+                            name=alert_name,
+                            frame=frame,
+                            person_box=person_box,
                             person_speed=fight_det.speed(track_id),
                             clip_label=current_clip_label,
                         )
-                        clip_smoking = "CONFIRMED_SMOKING" in final_state and not is_moving
-                        cv_smoking   = smoke_state == "CONFIRMED_SMOKING"
-                        if clip_smoking or cv_smoking:
+                        # Only SmokingDetector can confirm smoking (CLIP disabled — too noisy)
+                        if smoke_state == "CONFIRMED_SMOKING":
                             send_alert(f"smoking:{guard_id}", "Guard Smoking")
 
                     # IDLE: InactivityMonitor only, with startup grace + long cooldown

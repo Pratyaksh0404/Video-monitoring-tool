@@ -331,21 +331,38 @@ def api_config():
 
 @app.route("/api/perf")
 def api_perf():
-    """Return pipeline performance stats (latency per module)."""
-    # Read last N lines of system.log for display
+    """Return pipeline performance stats and recent system log."""
     log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "src", "logs", "system.log")
     recent_logs = []
+    perf_stats = {}
     if os.path.exists(log_path):
         try:
             with open(log_path, "r", encoding="utf-8", errors="replace") as f:
                 lines = f.readlines()
-            recent_logs = [l.rstrip() for l in lines[-50:]]
+            recent_logs = [l.rstrip() for l in lines[-100:]]
+
+            # Extract latest perf stats from log
+            for line in reversed(lines):
+                if "Perf stats |" in line and "(no data)" not in line:
+                    # Parse: "face_recognition: 541.1ms | person_detection: 71.4ms"
+                    parts = line.split("Perf stats |", 1)
+                    if len(parts) > 1:
+                        for segment in parts[1].strip().split(" | "):
+                            if ":" in segment and "ms" in segment:
+                                key, val = segment.split(":", 1)
+                                avg_ms = float(val.strip().replace("ms avg", "").replace("ms", "").strip())
+                                perf_stats[key.strip()] = {
+                                    "avg_ms": avg_ms,
+                                    "calls": 1,
+                                }
+                    break
         except Exception:
             pass
     return jsonify({
-        "log_lines": recent_logs,
-        "log_path":  log_path,
+        "log_lines":  recent_logs,
+        "log_path":   log_path,
+        "perf_stats": perf_stats,
     })
 
 

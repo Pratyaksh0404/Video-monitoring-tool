@@ -3,7 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Guard Monitoring System</title>
+<title>GMS — Guard Monitoring System</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%230d0f12'/><circle cx='16' cy='16' r='7' fill='none' stroke='%2322c55e' stroke-width='2.5'/><circle cx='16' cy='16' r='3' fill='%2322c55e'/></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
@@ -38,7 +39,7 @@
   /* ── Layout shell ─────────────────────────────────────────── */
   .shell {
     display: grid;
-    grid-template-rows: 44px 60px 1fr;
+    grid-template-rows: 44px auto 1fr;
     height: 100vh;
     min-height: 0;
   }
@@ -150,7 +151,7 @@
   /* ── Stats bar ────────────────────────────────────────────── */
   .statsbar {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(5, 1fr);
     border-bottom: 1px solid var(--border);
     background: var(--surface);
   }
@@ -159,7 +160,7 @@
     display: flex;
     flex-direction: column;
     justify-content: center;
-    padding: 0 20px;
+    padding: 8px 20px;
     border-right: 1px solid var(--border);
   }
   .stat:last-child { border-right: none; }
@@ -175,7 +176,7 @@
 
   .stat-val {
     font-family: var(--mono);
-    font-size: 22px;
+    font-size: 20px;
     font-weight: 500;
     color: var(--text);
     line-height: 1;
@@ -842,6 +843,119 @@
     transition: all 0.15s;
   }
   .an-refresh-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* ── Model status pills ────────────────────────────────────── */
+  .model-pills {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
+    margin-right: 12px;
+  }
+  .model-pill {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-family: var(--mono);
+    font-size: 9px;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 2px 7px;
+    white-space: nowrap;
+  }
+  .model-pill .dot {
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    background: var(--ok);
+    flex-shrink: 0;
+  }
+  .model-pill .dot.warn  { background: var(--warn); }
+  .model-pill .dot.off   { background: var(--muted); }
+
+  /* ── Uptime in stats bar ───────────────────────────────────── */
+  .stat-uptime {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+    margin-top: 3px;
+  }
+
+  /* ── High severity alert pulse ────────────────────────────── */
+  .log-item.sev-high {
+    border-left: 2px solid var(--danger);
+  }
+  .log-item.sev-high.new-flash {
+    animation: flashHigh 0.6s ease-out;
+  }
+  @keyframes flashHigh {
+    from { background: rgba(239,68,68,0.18); }
+    to   { background: transparent; }
+  }
+  .log-item.sev-medium {
+    border-left: 2px solid var(--warn);
+  }
+  .log-item.sev-low {
+    border-left: 2px solid var(--border2);
+  }
+
+  /* ── Analytics model health row ───────────────────────────── */
+  .model-health-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 8px;
+    margin-bottom: 14px;
+  }
+  .mh-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 10px 14px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .mh-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--ok);
+    flex-shrink: 0;
+    box-shadow: 0 0 6px var(--ok);
+  }
+  .mh-dot.warn { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
+  .mh-dot.off  { background: var(--muted); box-shadow: none; }
+  .mh-info { display: flex; flex-direction: column; gap: 1px; }
+  .mh-name {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.05em;
+    color: var(--text);
+    text-transform: uppercase;
+  }
+  .mh-sub {
+    font-size: 10px;
+    color: var(--muted);
+  }
+
+  /* ── Analytics improved guard rating ─────────────────────── */
+  .rating-high   { color: var(--danger); font-weight: 600; }
+  .rating-medium { color: var(--warn);   font-weight: 600; }
+  .rating-good   { color: var(--ok);     font-weight: 600; }
+
+  /* ── System log auto-refresh toggle ──────────────────────── */
+  .log-auto-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+    cursor: pointer;
+    user-select: none;
+  }
+  .log-auto-toggle input { accent-color: var(--accent); }
 </style>
 </head>
 <body>
@@ -865,8 +979,27 @@
               onclick="switchTab('system', this)">System Log</button>
     </nav>
 
+    <!-- Model status pills -->
+    <div class="model-pills" id="model-pills">
+      <div class="model-pill" id="pill-yolo">
+        <div class="dot" id="pill-yolo-dot"></div>
+        <span>YOLO</span>
+      </div>
+      <div class="model-pill" id="pill-face">
+        <div class="dot" id="pill-face-dot"></div>
+        <span>FACE</span>
+      </div>
+      <div class="model-pill" id="pill-clip">
+        <div class="dot" id="pill-clip-dot"></div>
+        <span>CLIP</span>
+      </div>
+      <div class="model-pill" id="pill-fire">
+        <div class="dot" id="pill-fire-dot"></div>
+        <span>FIRE</span>
+      </div>
+    </div>
+
     <div class="cam-label" id="cam-label">Camera 0</div>
-    <!-- Camera selector (only visible in multi-camera mode) -->
     <select class="cam-select" id="cam-select" style="display:none;"
             onchange="switchCamera(this.value)">
     </select>
@@ -892,6 +1025,10 @@
     <div class="stat">
       <div class="stat-label">Processing FPS</div>
       <div class="stat-val" id="s-fps">—</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Session uptime</div>
+      <div class="stat-val" id="s-uptime" style="font-size:18px;">00:00</div>
     </div>
   </div>
 
@@ -1026,6 +1163,45 @@
       </div>
     </div>
 
+    <!-- Model health row -->
+    <div class="model-health-row" id="an-model-health">
+      <div class="mh-card">
+        <div class="mh-dot" id="mh-yolo"></div>
+        <div class="mh-info">
+          <div class="mh-name">Person Detection</div>
+          <div class="mh-sub" id="mh-yolo-sub">YOLOv8n · ready</div>
+        </div>
+      </div>
+      <div class="mh-card">
+        <div class="mh-dot" id="mh-face"></div>
+        <div class="mh-info">
+          <div class="mh-name">Face Recognition</div>
+          <div class="mh-sub" id="mh-face-sub">dlib · loading</div>
+        </div>
+      </div>
+      <div class="mh-card">
+        <div class="mh-dot" id="mh-clip"></div>
+        <div class="mh-info">
+          <div class="mh-name">Behavior (CLIP)</div>
+          <div class="mh-sub" id="mh-clip-sub">RN50 · loading</div>
+        </div>
+      </div>
+      <div class="mh-card">
+        <div class="mh-dot" id="mh-weapon"></div>
+        <div class="mh-info">
+          <div class="mh-name">Weapon Detection</div>
+          <div class="mh-sub" id="mh-weapon-sub">YOLOv8n · ready</div>
+        </div>
+      </div>
+      <div class="mh-card">
+        <div class="mh-dot" id="mh-fire"></div>
+        <div class="mh-info">
+          <div class="mh-name">Fire Detection</div>
+          <div class="mh-sub" id="mh-fire-sub">YOLOv8 · ready</div>
+        </div>
+      </div>
+    </div>
+
     <!-- Row 1: Alert Types bar + Severity donut -->
     <div class="an-row">
       <div class="an-card wide">
@@ -1106,21 +1282,80 @@
        SYSTEM LOG TAB
   ═══════════════════════════════════════════════════════ -->
   <div class="analytics-panel" id="view-system" style="display:none">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
-      <div style="font-family:var(--mono);font-size:11px;letter-spacing:0.1em;color:var(--muted);text-transform:uppercase;">
-        System Log — last 50 entries
+
+    <!-- Model status summary cards -->
+    <div class="model-health-row" style="margin-bottom:16px;">
+      <div class="mh-card">
+        <div class="mh-dot"></div>
+        <div class="mh-info">
+          <div class="mh-name">Person Detection</div>
+          <div class="mh-sub">YOLOv8n · ~90ms/frame</div>
+        </div>
       </div>
-      <button onclick="loadSystemLog()" style="font-family:var(--mono);font-size:10px;
-        padding:3px 12px;border:1px solid var(--border2);background:transparent;
-        color:var(--muted);border-radius:3px;cursor:pointer;">Refresh</button>
+      <div class="mh-card">
+        <div class="mh-dot"></div>
+        <div class="mh-info">
+          <div class="mh-name">Face Recognition</div>
+          <div class="mh-sub" id="sl-face-sub">dlib · every 8 frames</div>
+        </div>
+      </div>
+      <div class="mh-card">
+        <div class="mh-dot"></div>
+        <div class="mh-info">
+          <div class="mh-name">Behavior (CLIP)</div>
+          <div class="mh-sub">RN50 · every 50 frames</div>
+        </div>
+      </div>
+      <div class="mh-card">
+        <div class="mh-dot"></div>
+        <div class="mh-info">
+          <div class="mh-name">Weapon Detection</div>
+          <div class="mh-sub">YOLOv8n · every 12 frames</div>
+        </div>
+      </div>
+      <div class="mh-card">
+        <div class="mh-dot"></div>
+        <div class="mh-info">
+          <div class="mh-name">Fire Detection</div>
+          <div class="mh-sub">YOLOv8 · fire class only</div>
+        </div>
+      </div>
     </div>
+
+    <!-- Log header -->
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+      <div style="font-family:var(--mono);font-size:11px;letter-spacing:0.1em;
+                  color:var(--muted);text-transform:uppercase;">
+        System Log — last 50 entries
+        <span id="sl-log-path" style="font-size:9px;margin-left:8px;opacity:0.5;"></span>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;">
+        <label class="log-auto-toggle">
+          <input type="checkbox" id="sl-auto-refresh" onchange="toggleLogAutoRefresh()">
+          Auto-refresh
+        </label>
+        <button onclick="loadSystemLog()" style="font-family:var(--mono);font-size:10px;
+          padding:3px 12px;border:1px solid var(--border2);background:transparent;
+          color:var(--muted);border-radius:3px;cursor:pointer;transition:all 0.15s;"
+          onmouseover="this.style.borderColor='var(--accent)';this.style.color='var(--accent)'"
+          onmouseout="this.style.borderColor='var(--border2)';this.style.color='var(--muted)'">
+          Refresh
+        </button>
+      </div>
+    </div>
+
+    <!-- Log entries -->
     <div id="system-log-box" style="
       background:var(--surface);border:1px solid var(--border);border-radius:4px;
       padding:12px 16px;font-family:var(--mono);font-size:11px;line-height:1.7;
-      color:var(--text);overflow-y:auto;max-height:520px;white-space:pre-wrap;
+      color:var(--text);overflow-y:auto;max-height:460px;white-space:pre-wrap;
       word-break:break-all;">
       <span style="color:var(--muted);">Click Refresh to load system log...</span>
     </div>
+
+    <!-- Perf stats summary -->
+    <div id="sl-perf-row" style="display:flex;gap:12px;margin-top:12px;flex-wrap:wrap;"></div>
+
   </div><!-- /view-system -->
 
 </div><!-- /shell -->
@@ -1139,6 +1374,52 @@ let currentFilter  = 'all';
 let autoScroll     = true;
 let streamMode     = 'live';
 let soundEnabled   = true;
+
+// ── Session uptime ─────────────────────────────────────────────
+const _sessionStart = Date.now();
+let _modelStatus = { yolo: true, face: false, clip: false, fire: true, weapon: true };
+
+function _updateUptime() {
+  const secs  = Math.floor((Date.now() - _sessionStart) / 1000);
+  const h     = Math.floor(secs / 3600);
+  const m     = Math.floor((secs % 3600) / 60);
+  const s     = secs % 60;
+  const fmt   = h > 0
+    ? `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`
+    : `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+  const el = document.getElementById('s-uptime');
+  if (el) el.textContent = fmt;
+}
+setInterval(_updateUptime, 1000);
+
+function _updateModelPills(stats) {
+  // YOLO/person detection — ready if we're getting FPS
+  const running = stats.fps && stats.fps !== '—' && stats.fps > 0;
+  _updatePill('pill-yolo', running, 'YOLO');
+  _updatePill('pill-weapon', true, 'WEAPON');
+
+  // CLIP — ready after ~30s (we detect it from first behavior alert or time)
+  const clipReady = _modelStatus.clip || (Date.now() - _sessionStart) > 35000;
+  if (clipReady) _modelStatus.clip = true;
+  _updatePill('pill-clip', clipReady, 'CLIP');
+
+  // Face — ready after encodings load (~45s)
+  const faceReady = _modelStatus.face || (Date.now() - _sessionStart) > 50000;
+  if (faceReady) _modelStatus.face = true;
+  _updatePill('pill-face', faceReady, 'FACE');
+
+  // Fire model
+  _updatePill('pill-fire', _modelStatus.fire, 'FIRE');
+}
+
+function _updatePill(id, ready, label) {
+  const pill = document.getElementById(id);
+  if (!pill) return;
+  const dot = document.getElementById(id + '-dot');
+  if (dot) {
+    dot.className = 'dot' + (ready ? '' : ' off');
+  }
+}
 
 // ── Alert sound system ────────────────────────────────────────
 // Generate a short beep using Web Audio API (no external file needed)
@@ -1216,12 +1497,18 @@ function pollStats() {
       document.getElementById('s-alerts').textContent     = d.alerts_today ?? alertCount;
       document.getElementById('s-violations').textContent = d.active_violations ?? violationCount;
       document.getElementById('s-guards').textContent     = d.guards_detected ?? '—';
-      document.getElementById('cam-label').textContent    = d.source_label || 'Camera 0';
+
+      // Camera label — show actual source name, not raw "Camera 0"
+      const lbl = d.source_label || 'Camera 0';
+      document.getElementById('cam-label').textContent = lbl;
 
       const isFile = d.source_type === 'file';
       document.getElementById('mode-badge').textContent   = isFile ? 'RECORDED' : 'LIVE';
       document.getElementById('mode-badge').className     = 'mode-badge' + (isFile ? ' recorded' : '');
       document.getElementById('pulse-dot').className      = 'pulse-dot' + (isFile ? ' idle' : '');
+
+      // Update model pills
+      _updateModelPills(d);
     })
     .catch(() => {});
 }
@@ -1238,7 +1525,9 @@ function appendAlert(a, isNew) {
   const isAcked = a.acknowledged || false;
 
   const item = document.createElement('div');
-  item.className = 'log-item' + (isNew ? ' new-flash' : '') + (isAcked ? ' acknowledged' : '');
+  item.className = 'log-item sev-' + (a.severity || 'low')
+    + (isNew ? ' new-flash' : '')
+    + (isAcked ? ' acknowledged' : '');
   item.dataset.type = a.type.toLowerCase();
   item.dataset.alertId = alertId;
 
@@ -1311,7 +1600,7 @@ const filterMap = {
   patrol:     ['patrol'],
   smoking:    ['guard smoking', 'smoking'],
   fight:      ['guard under attack', 'fight', 'violence'],
-  fire:       ['fire', 'smoke'],
+  fire:       ['fire detected', 'fire'],
   crowd:      ['crowd'],
   weapon:     ['weapon detected', 'unattended weapon', 'weapon'],
   all:        [],
@@ -1416,33 +1705,66 @@ function showToast(msg, isDanger) {
 
 // ── Utils ──────────────────────────────────────────────────────
 // ── System log ─────────────────────────────────────────────────
+let _logRefreshTimer = null;
+
+function toggleLogAutoRefresh() {
+  const cb = document.getElementById('sl-auto-refresh');
+  if (cb.checked) {
+    loadSystemLog();
+    _logRefreshTimer = setInterval(loadSystemLog, 5000);
+  } else {
+    clearInterval(_logRefreshTimer);
+    _logRefreshTimer = null;
+  }
+}
+
 function loadSystemLog() {
   const box = document.getElementById('system-log-box');
-  box.textContent = 'Loading...';
   fetch('/api/perf')
     .then(r => r.json())
     .then(d => {
+      // Show log path
+      const pathEl = document.getElementById('sl-log-path');
+      if (pathEl && d.log_path) {
+        const parts = d.log_path.replace(/\\/g, '/').split('/');
+        pathEl.textContent = '→ ' + parts.slice(-3).join('/');
+      }
+
       const lines = d.log_lines || [];
       if (!lines.length) {
         box.innerHTML = '<span style="color:var(--muted);">No log entries yet. '
           + 'Logs appear after ~60s of runtime.</span>';
         return;
       }
-      // Color-code log levels
       box.innerHTML = lines.map(line => {
         let color = 'var(--text)';
         if (line.includes('] ERROR   ') || line.includes('] CRITICAL'))
           color = 'var(--danger)';
         else if (line.includes('] WARNING '))
-          color = '#f59e0b';
+          color = 'var(--warn)';
         else if (line.includes('] DEBUG   '))
           color = 'var(--muted)';
         else if (line.includes('] INFO    '))
           color = 'var(--ok)';
         return `<span style="color:${color}">${escHtml(line)}</span>`;
       }).join('\n');
-      // Scroll to bottom
       box.scrollTop = box.scrollHeight;
+
+      // Show perf stats as cards
+      if (d.perf_stats) {
+        const row = document.getElementById('sl-perf-row');
+        if (row) {
+          row.innerHTML = Object.entries(d.perf_stats).map(([k, v]) => `
+            <div style="background:var(--panel);border:1px solid var(--border);
+              border-radius:4px;padding:8px 14px;font-family:var(--mono);font-size:10px;">
+              <div style="color:var(--muted);text-transform:uppercase;
+                letter-spacing:0.05em;margin-bottom:2px;">${escHtml(k.replace('_',' '))}</div>
+              <div style="color:var(--text);font-size:13px;">${v.avg_ms}ms avg</div>
+              <div style="color:var(--muted)">${v.calls} calls</div>
+            </div>
+          `).join('');
+        }
+      }
     })
     .catch(e => {
       box.innerHTML = '<span style="color:var(--danger);">Failed to load log: '
