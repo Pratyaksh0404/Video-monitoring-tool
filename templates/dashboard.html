@@ -1019,16 +1019,16 @@
       <div class="stat-val danger" id="s-violations">0</div>
     </div>
     <div class="stat">
+      <div class="stat-label">People in frame</div>
+      <div class="stat-val" id="s-people">0</div>
+    </div>
+    <div class="stat">
       <div class="stat-label">Alerts today</div>
       <div class="stat-val" id="s-alerts">0</div>
     </div>
     <div class="stat">
       <div class="stat-label">Processing FPS</div>
       <div class="stat-val" id="s-fps">—</div>
-    </div>
-    <div class="stat">
-      <div class="stat-label">Session uptime</div>
-      <div class="stat-val" id="s-uptime" style="font-size:18px;">00:00</div>
     </div>
   </div>
 
@@ -1157,9 +1157,9 @@
         <div class="an-kpi-sub" id="an-top-zone-count">most incidents</div>
       </div>
       <div class="an-kpi">
-        <div class="an-kpi-label">Guards Tracked</div>
-        <div class="an-kpi-val ok" id="an-guards">—</div>
-        <div class="an-kpi-sub">with face ID</div>
+        <div class="an-kpi-label">Avg Compliance</div>
+        <div class="an-kpi-val ok" id="an-compliance">—</div>
+        <div class="an-kpi-sub" id="an-compliance-sub">SOP score</div>
       </div>
     </div>
 
@@ -1264,12 +1264,14 @@
               <tr>
                 <th>Guard ID</th>
                 <th>Alerts</th>
+                <th>Dwell Time</th>
                 <th>Patrol Coverage</th>
+                <th>Compliance</th>
                 <th>Rating</th>
               </tr>
             </thead>
             <tbody id="guard-tbody">
-              <tr><td colspan="4" class="no-data-msg">No guard data yet</td></tr>
+              <tr><td colspan="6" class="no-data-msg">No guard data yet</td></tr>
             </tbody>
           </table>
         </div>
@@ -1497,8 +1499,9 @@ function pollStats() {
       document.getElementById('s-alerts').textContent     = d.alerts_today ?? alertCount;
       document.getElementById('s-violations').textContent = d.active_violations ?? violationCount;
       document.getElementById('s-guards').textContent     = d.guards_detected ?? '—';
+      document.getElementById('s-people').textContent     = d.people_count ?? 0;
 
-      // Camera label — show actual source name, not raw "Camera 0"
+      // Camera label
       const lbl = d.source_label || 'Camera 0';
       document.getElementById('cam-label').textContent = lbl;
 
@@ -1507,7 +1510,6 @@ function pollStats() {
       document.getElementById('mode-badge').className     = 'mode-badge' + (isFile ? ' recorded' : '');
       document.getElementById('pulse-dot').className      = 'pulse-dot' + (isFile ? ' idle' : '');
 
-      // Update model pills
       _updateModelPills(d);
     })
     .catch(() => {});
@@ -1890,7 +1892,21 @@ function renderAnalytics(d) {
     topZoneEntry ? topZoneEntry[1] + ' alerts' : 'no zone data';
 
   const namedGuards = Object.keys(d.guard_alert_counts || {}).filter(g => g !== 'Post');
-  document.getElementById('an-guards').textContent = namedGuards.length || '—';
+
+  // Fetch live compliance scores for KPI card
+  fetch('/api/occupancy').then(r => r.json()).then(occ => {
+    const scores = Object.values(occ.compliance_scores || {});
+    if (scores.length > 0) {
+      const avg = Math.round(scores.reduce((a,b) => a+b, 0) / scores.length);
+      const el  = document.getElementById('an-compliance');
+      const sub = document.getElementById('an-compliance-sub');
+      el.textContent  = avg + '%';
+      el.className    = 'an-kpi-val ' + (avg >= 75 ? 'ok' : avg >= 50 ? 'warn' : 'danger');
+      sub.textContent = namedGuards.length + ' guard' + (namedGuards.length !== 1 ? 's' : '') + ' tracked';
+    } else {
+      document.getElementById('an-compliance').textContent = '—';
+    }
+  }).catch(() => {});
 
   // ── Zone heatmap ─────────────────────────────────────────────
   const maxZoneVal = Math.max(1, ...Object.values(zoneCounts));
@@ -1906,41 +1922,88 @@ function renderAnalytics(d) {
   });
 
   // ── Guard performance table ───────────────────────────────────
-  const alertCounts  = d.guard_alert_counts || {};
-  const compliance   = d.guard_compliance   || {};
+  const alertCounts  = d.guard_alert_counts  || {};
+  const compliance   = d.guard_compliance    || {};
   const guards = Object.keys(alertCounts).filter(g => g !== 'Post');
   const tbody  = document.getElementById('guard-tbody');
 
-  if (guards.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="4" class="no-data-msg">No named guards detected yet</td></tr>';
-  } else {
-    tbody.innerHTML = guards
-      .sort((a, b) => (alertCounts[b] || 0) - (alertCounts[a] || 0))
-      .map(g => {
-        const alerts = alertCounts[g] || 0;
-        const cov    = compliance[g]  || 0;
-        const cls    = cov >= 75 ? 'ok' : cov >= 50 ? 'warn' : 'danger';
-        const label  = cov >= 75 ? 'Good'  : cov >= 50 ? 'Fair' : 'Low';
-        return `
-          <tr>
-            <td>${escHtml(g)}</td>
-            <td>${alerts}</td>
-            <td>
-              <div class="compliance-wrap">
-                <div class="compliance-bg">
-                  <div class="compliance-fill ${cls}" style="width:${cov}%"></div>
+  // Also fetch live occupancy data for dwell times + compliance scores
+  fetch('/api/occupancy')
+    .then(r => r.json())
+    .then(occ => {
+      const dwellTimes      = occ.dwell_times       || {};
+      const complianceScores = occ.compliance_scores || {};
+
+      if (guards.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="no-data-msg">No named guards detected yet</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = guards
+        .sort((a, b) => (alertCounts[b] || 0) - (alertCounts[a] || 0))
+        .map(g => {
+          const alerts = alertCounts[g] || 0;
+          const cov    = compliance[g]  || 0;
+          const score  = complianceScores[g] || null;
+
+          // Dwell time formatting
+          const dwellSecs = dwellTimes[g] || 0;
+          const dwellStr  = dwellSecs > 0
+            ? (dwellSecs >= 3600
+                ? `${Math.floor(dwellSecs/3600)}h ${Math.floor((dwellSecs%3600)/60)}m`
+                : dwellSecs >= 60
+                  ? `${Math.floor(dwellSecs/60)}m ${dwellSecs%60}s`
+                  : `${dwellSecs}s`)
+            : '—';
+
+          // Compliance score display
+          const scoreStr   = score !== null ? score.toFixed(0) + '%' : '—';
+          const scoreCls   = score === null ? '' : score >= 75 ? 'rating-good' : score >= 50 ? 'rating-medium' : 'rating-high';
+
+          const cls    = cov >= 75 ? 'ok' : cov >= 50 ? 'warn' : 'danger';
+          const label  = cov >= 75 ? 'Good'  : cov >= 50 ? 'Fair' : 'Low';
+          return `
+            <tr>
+              <td>${escHtml(g)}</td>
+              <td>${alerts}</td>
+              <td style="font-family:var(--mono);font-size:11px;">${dwellStr}</td>
+              <td>
+                <div class="compliance-wrap">
+                  <div class="compliance-bg">
+                    <div class="compliance-fill ${cls}" style="width:${cov}%"></div>
+                  </div>
+                  <span class="compliance-pct">${cov}%</span>
                 </div>
-                <span class="compliance-pct">${cov}%</span>
-              </div>
-            </td>
-            <td>
-              <span class="status-pill">
-                <span class="status-dot ${cls}"></span>${label}
-              </span>
-            </td>
-          </tr>`;
+              </td>
+              <td class="${scoreCls}" style="font-family:var(--mono);font-size:12px;">${scoreStr}</td>
+              <td>
+                <span class="status-pill">
+                  <span class="status-dot ${cls}"></span>${label}
+                </span>
+              </td>
+            </tr>`;
+        }).join('');
+    })
+    .catch(() => {
+      if (guards.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="no-data-msg">No named guards detected yet</td></tr>';
+        return;
+      }
+      tbody.innerHTML = guards.map(g => {
+        const alerts = alertCounts[g] || 0;
+        const cov = compliance[g] || 0;
+        const cls = cov >= 75 ? 'ok' : cov >= 50 ? 'warn' : 'danger';
+        const label = cov >= 75 ? 'Good' : cov >= 50 ? 'Fair' : 'Low';
+        return `<tr>
+          <td>${escHtml(g)}</td><td>${alerts}</td><td>—</td>
+          <td><div class="compliance-wrap"><div class="compliance-bg">
+          <div class="compliance-fill ${cls}" style="width:${cov}%"></div></div>
+          <span class="compliance-pct">${cov}%</span></div></td>
+          <td>—</td>
+          <td><span class="status-pill"><span class="status-dot ${cls}"></span>${label}</span></td>
+        </tr>`;
       }).join('');
-  }
+    });
 
   // ── Charts ───────────────────────────────────────────────────
   renderTypesChart(d.type_counts || {});

@@ -11,19 +11,19 @@ class BehaviorEngine:
 
     # Per-label confirm ratio overrides
     _CONFIRM_RATIO_OVERRIDE = {
-        "SMOKING":          0.85,   # raised from 0.75 — needs 7 of 8 readings
-        "SLEEPING":         0.70,   # raised from 0.60 — needs 6 of 8 readings
+        "SMOKING":          0.85,
+        "SLEEPING":         0.70,
         "PHONE_USE":        0.60,
         "IDLE":             0.60,
         "DISTRACTED_OTHER": 0.55,
     }
 
     # Labels to ignore — these are handled by dedicated systems, not CLIP
-    _IGNORED_LABELS = {"IDLE"}   # Idle handled by InactivityMonitor
+    _IGNORED_LABELS = {"IDLE"}
 
     # Minimum readings in window before we confirm anything
-    MIN_READINGS_FOR_CONFIRM  = 5   # needs ~45s of consistent behavior (was 4)
-    MIN_READINGS_FOR_POSSIBLE = 3   # needs ~27s before POSSIBLE (was 2)
+    MIN_READINGS_FOR_CONFIRM  = 7
+    MIN_READINGS_FOR_POSSIBLE = 4
 
     def __init__(self):
         # track_id → deque of (timestamp, label) readings

@@ -26,7 +26,6 @@ from analytics.anomaly_detector import AnomalyDetector
 from video_streamer import streamer
 from utils.logger import get_logger
 from utils.timer import PipelineTimer
-from analytics.smoking_detector import SmokingDetector
 
 log = get_logger("main_web")
 
@@ -297,7 +296,6 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
     loitering_det   = LoiteringDetector()
     fight_det       = FightDetector()
     unknown_tracker = UnknownTracker()
-    smoking_det     = SmokingDetector()
     timer           = PipelineTimer()
 
     log.info("Waiting for first frame...")
@@ -340,6 +338,21 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
 
     # Fire sustained detection — rolling window of confident detection timestamps
     fire_hits = []   # timestamps of readings that hit FIRE_MIN_CONFIDENCE
+
+    # ── Dwell time + compliance tracking ─────────────────────────────────────
+    identity_first_seen = {}   # name → first time seen this session (epoch)
+
+    compliance = {}            # name → compliance metrics dict
+    def get_compliance(name):
+        if name not in compliance:
+            compliance[name] = {
+                "patrol_zones":   set(),
+                "idle_frames":    0,
+                "phone_frames":   0,
+                "sleeping_frames":0,
+                "present_frames": 0,
+            }
+        return compliance[name]
 
     # Pipeline start time — for startup grace periods
     pipeline_start_time = time.time()
@@ -392,7 +405,6 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                 loitering_det.reset(dead_id)
                 fight_det.reset(dead_id)
                 beh_engine.reset(dead_id)
-                # Note: smoking_det state is identity-based, not reset on track death
                 last_pos = track_last_pos.pop(dead_id, None)
                 unknown_tracker.on_track_lost(dead_id, last_pos)
                 if anomaly_det:
@@ -600,6 +612,16 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
 
                 active_guard_ids.add(alert_name)
 
+                # ── Dwell time tracking ───────────────────────────────────────
+                if alert_name not in identity_first_seen:
+                    identity_first_seen[alert_name] = now
+                dwell_secs = now - identity_first_seen[alert_name]
+
+                # ── Compliance frame counting ─────────────────────────────────
+                if guard_id != "UNKNOWN":
+                    c = get_compliance(guard_id)
+                    c["present_frames"] += 1
+
                 # ── Behavior ──────────────────────────────────────────────────
                 # Don't run behavior for unknowns during crowd — too many false hits
                 run_behavior = (post_status == "PRESENT" and
@@ -645,6 +667,8 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                         short_path = id_traj.get_path_short(guard_id, PATROL_DISPLAY_ZONES)
                         log.info(f"PATROL {guard_id} — {short_path}")
                         last_patrol_alerted_zone[guard_id] = latest_zone
+                        # Track patrol zone for compliance
+                        get_compliance(guard_id)["patrol_zones"].add(latest_zone)
                         alert_manager.send_alert(
                             f"Patrol: {short_path}", guard_id, zone=display_zone)
                 else:
@@ -678,7 +702,9 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                             (x1, max(y1-8, 12)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
                 if display_zone and display_zone != "?":
-                    cv2.putText(frame, f"Zone:{display_zone}",
+                    dwell_secs_now = round(now - identity_first_seen.get(alert_name, now))
+                    dwell_str = f"{dwell_secs_now//60}m{dwell_secs_now%60:02d}s" if dwell_secs_now >= 60 else f"{dwell_secs_now}s"
+                    cv2.putText(frame, f"Zone:{display_zone}  {dwell_str}",
                                 (x1, y1+22),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255,255,0), 1)
 
@@ -699,35 +725,27 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                 is_moving = person_speed > IDLE_MAX_SPEED
 
                 if guard_id != "UNKNOWN":
+                    c = get_compliance(guard_id)
+
                     # SLEEPING: requires person to be stationary (not just looking down)
                     if "CONFIRMED_SLEEPING" in final_state and not is_moving:
                         send_alert(f"sleep:{guard_id}", "Guard Sleeping")
+                        c["sleeping_frames"] += 1
                     elif "CONFIRMED_PHONE_USE" in final_state:
                         send_alert(f"phone:{guard_id}", "Phone Usage")
+                        c["phone_frames"] += 1
+                    elif "CONFIRMED_SMOKING" in final_state and not is_moving:
+                        # SMOKING: back to CLIP-based detection.
+                        # SmokingDetector (skin/hand detection) had too many false
+                        # positives from eating, resting chin on hand, etc.
+                        # CLIP with not_is_moving gate + 85% confirm ratio works better.
+                        # Future: replace with cigarette object detection model.
+                        send_alert(f"smoking:{guard_id}", "Guard Smoking")
 
-                    # SMOKING — dual-layer: CLIP confirmed OR SmokingDetector confirms
-                    # SmokingDetector uses skin detection + 15s sustained hand-near-mouth
-                    # SmokingDetector: keyed on alert_name (identity), not track_id
-                    # This means the timer survives track re-registration when
-                    # the person briefly turns sideways and gets a new track ID
-                    else:
-                        with beh_cache_lock:
-                            current_clip_label = beh_label_cache.get(track_id, "ANALYZING")
-                        smoke_state = smoking_det.update_by_name(
-                            name=alert_name,
-                            frame=frame,
-                            person_box=person_box,
-                            person_speed=fight_det.speed(track_id),
-                            clip_label=current_clip_label,
-                        )
-                        # Only SmokingDetector can confirm smoking (CLIP disabled — too noisy)
-                        if smoke_state == "CONFIRMED_SMOKING":
-                            send_alert(f"smoking:{guard_id}", "Guard Smoking")
-
-                    # IDLE: InactivityMonitor only, with startup grace + long cooldown
-                    # Suppressed for first IDLE_STARTUP_GRACE seconds after pipeline starts
+                    # IDLE
                     if (not is_moving and activity_status == "INACTIVE"
                           and (now - pipeline_start_time) > IDLE_STARTUP_GRACE):
+                        c["idle_frames"] += 1
                         idle_key = f"idle:{guard_id}"
                         if now - last_alert_time.get(idle_key, 0) > IDLE_COOLDOWN:
                             alert_manager.send_alert("Guard Idle", alert_name, zone=display_zone)
@@ -800,9 +818,36 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                     last_alert_time["post_missing"] = now
 
             # ── Stats ─────────────────────────────────────────────────────────
+            # Compute compliance scores (0-100) for each known guard
+            compliance_scores = {}
+            for name, c in compliance.items():
+                if c["present_frames"] < 10:
+                    continue
+                pf = max(c["present_frames"], 1)
+                patrol_pct   = min(len(c["patrol_zones"]) / 4 * 100, 100)
+                idle_pct     = min(c["idle_frames"]     / pf * 100, 100)
+                phone_pct    = min(c["phone_frames"]    / pf * 100, 100)
+                sleeping_pct = min(c["sleeping_frames"] / pf * 100, 100)
+                # Score: 40% patrol + 20% not-idle + 20% not-phone + 20% not-sleeping
+                score = (patrol_pct * 0.4
+                         + (100 - idle_pct)     * 0.2
+                         + (100 - phone_pct)    * 0.2
+                         + (100 - sleeping_pct) * 0.2)
+                compliance_scores[name] = round(score, 1)
+
+            # Dwell times in seconds for each identity currently in frame
+            dwell_now = {
+                name: round(now - t)
+                for name, t in identity_first_seen.items()
+                if name in active_guard_ids
+            }
+
             effective_streamer.update_stats(
                 guards_detected=len(active_guard_ids),
                 active_violations=len(active_violations),
+                people_count=len(tracked_objects),
+                dwell_times=dwell_now,
+                compliance_scores=compliance_scores,
             )
 
             # ── HUD ───────────────────────────────────────────────────────────
@@ -836,7 +881,6 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
         loitering_det.reset_all()
         fight_det.reset()
         unknown_tracker.reset()
-        smoking_det.reset()
         log.info("Pipeline loop ended.")
 
 

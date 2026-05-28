@@ -172,6 +172,22 @@ def api_stats():
     return jsonify(streamer.stats)
 
 
+@app.route("/api/occupancy")
+def api_occupancy():
+    """
+    Real-time occupancy data:
+    - people_count: current number of persons in frame
+    - dwell_times: { name: seconds_in_frame }
+    - compliance_scores: { name: 0-100 score }
+    """
+    s = streamer.stats
+    return jsonify({
+        "people_count":      s.get("people_count", 0),
+        "dwell_times":       s.get("dwell_times", {}),
+        "compliance_scores": s.get("compliance_scores", {}),
+    })
+
+
 @app.route("/api/analytics")
 def api_analytics():
     """

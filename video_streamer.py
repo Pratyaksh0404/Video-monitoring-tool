@@ -15,6 +15,9 @@ class VideoStreamer:
         self._guards_detected   = 0
         self._active_violations = 0
         self._alerts_today      = 0
+        self._people_count      = 0
+        self._dwell_times       = {}
+        self._compliance_scores = {}
 
     def push_frame(self, frame_bgr):
         ok, buf = cv2.imencode(".jpg", frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, 70])
@@ -50,10 +53,15 @@ class VideoStreamer:
         self.source_type  = source_type
         self.source_label = label or source_type
 
-    def update_stats(self, guards_detected=None, active_violations=None, alerts_today=None):
+    def update_stats(self, guards_detected=None, active_violations=None,
+                     alerts_today=None, people_count=None,
+                     dwell_times=None, compliance_scores=None):
         if guards_detected   is not None: self._guards_detected   = guards_detected
         if active_violations is not None: self._active_violations = active_violations
         if alerts_today      is not None: self._alerts_today      = alerts_today
+        if people_count      is not None: self._people_count      = people_count
+        if dwell_times       is not None: self._dwell_times       = dwell_times
+        if compliance_scores is not None: self._compliance_scores = compliance_scores
 
     @property
     def stats(self):
@@ -65,6 +73,9 @@ class VideoStreamer:
             "guards_detected":   self._guards_detected,
             "active_violations": self._active_violations,
             "alerts_today":      self._alerts_today,
+            "people_count":      self._people_count,
+            "dwell_times":       self._dwell_times,
+            "compliance_scores": self._compliance_scores,
         }
 
 
