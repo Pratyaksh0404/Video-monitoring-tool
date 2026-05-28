@@ -1100,6 +1100,7 @@
         <button class="filter-chip" data-filter="fire" onclick="setFilter('fire',this)">Fire</button>
         <button class="filter-chip" data-filter="crowd" onclick="setFilter('crowd',this)">Crowd</button>
         <button class="filter-chip" data-filter="weapon" onclick="setFilter('weapon',this)">Weapon</button>
+        <button class="filter-chip" data-filter="tamper" onclick="setFilter('tamper',this)">Tamper</button>
       </div>
 
       <div class="log-list" id="log-list"></div>
@@ -1605,6 +1606,7 @@ const filterMap = {
   fire:       ['fire detected', 'fire'],
   crowd:      ['crowd'],
   weapon:     ['weapon detected', 'unattended weapon', 'weapon'],
+  tamper:     ['camera tamper'],
   all:        [],
 };
 

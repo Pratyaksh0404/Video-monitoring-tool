@@ -23,6 +23,7 @@ from analytics.fight_detector import FightDetector
 from analytics.unknown_tracker import UnknownTracker
 from alerts.alert_manager import AlertManager
 from analytics.anomaly_detector import AnomalyDetector
+from analytics.camera_tamper import CameraTamper
 from video_streamer import streamer
 from utils.logger import get_logger
 from utils.timer import PipelineTimer
@@ -296,6 +297,7 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
     loitering_det   = LoiteringDetector()
     fight_det       = FightDetector()
     unknown_tracker = UnknownTracker()
+    camera_tamper   = CameraTamper()
     timer           = PipelineTimer()
 
     log.info("Waiting for first frame...")
@@ -373,6 +375,13 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                 post_area     = (0, 0, w, h)
                 zone_detector = TrajectoryTracker(roi=post_area, grid_size=2)
                 log.info(f"Frame: {w}x{h}, POST_AREA={post_area}")
+
+            # ── Camera tamper check ───────────────────────────────────────────
+            tamper_event = camera_tamper.update(frame)
+            if tamper_event:
+                alert_manager.send_alert(
+                    f"Camera Tamper: {tamper_event}", "Camera", zone="—")
+                active_violations.add("Tamper")
 
             # ── Detection ────────────────────────────────────────────────────
             timer.start("person_detection")
@@ -881,6 +890,7 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
         loitering_det.reset_all()
         fight_det.reset()
         unknown_tracker.reset()
+        camera_tamper.reset()
         log.info("Pipeline loop ended.")
 
 

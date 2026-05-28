@@ -26,6 +26,7 @@ _SEVERITY = {
     "Guard Under Attack":               "high",
     "Unknown Person Sleeping":          "high",
     "Unknown Person Using Phone":       "high",
+    "Camera Tamper":                    "high",
     # MEDIUM
     "Guard Idle":                       "medium",
     "Guard Smoking":                    "medium",
