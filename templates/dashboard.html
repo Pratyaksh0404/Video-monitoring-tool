@@ -1136,6 +1136,9 @@
       <span class="an-section-label">Session Statistics</span>
       <div style="display:flex; align-items:center; gap:10px;">
         <span class="an-refresh-hint" id="an-last-updated"></span>
+        <button class="an-refresh-btn" onclick="generateReport()" style="border-color:#22c55e;color:#22c55e;" id="btn-report">
+          ⬇ Generate Report
+        </button>
         <button class="an-refresh-btn" onclick="loadAnalytics()">↻ Refresh</button>
       </div>
     </div>
@@ -2189,6 +2192,36 @@ function renderHourlyChart(hourlyCounts) {
     }
   });
 }
+
+// ── Shift Report ──────────────────────────────────────────────
+function generateReport() {
+  const btn = document.getElementById('btn-report');
+  if (btn) {
+    btn.textContent = '⏳ Generating…';
+    btn.disabled = true;
+    btn.style.opacity = '0.6';
+  }
+
+  // Open report in new tab (user can print to PDF or use Download HTML button inside)
+  const win = window.open('/api/report/generate', '_blank');
+
+  setTimeout(() => {
+    if (btn) {
+      btn.textContent = '⬇ Generate Report';
+      btn.disabled = false;
+      btn.style.opacity = '1';
+    }
+    if (!win) {
+      // Pop-up blocked — trigger direct HTML download instead
+      showToast('Pop-up blocked — downloading HTML directly…', false);
+      const a = document.createElement('a');
+      a.href = '/api/report/generate?download=true';
+      a.download = 'GMS_ShiftReport.html';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
+  }, 2000);
+}
+
 </script>
-</body>
-</html>

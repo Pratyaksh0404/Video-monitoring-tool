@@ -2,7 +2,6 @@ import sys
 import os
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
-# Set model cache BEFORE any other imports
 _cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model_cache")
 os.makedirs(_cache_dir, exist_ok=True)
 os.environ["HUGGINGFACE_HUB_CACHE"] = _cache_dir
@@ -33,10 +32,8 @@ from utils.logger import get_logger
 
 log = get_logger("flask_app")
 
-# ── Multi-camera + Email setup ────────────────────────────────────────────────
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Load rules config for email settings
 _rules_config = {}
 _rules_config_path = os.path.join(_BASE_DIR, "config", "rules_config.yaml")
 if os.path.exists(_rules_config_path):
@@ -47,15 +44,24 @@ if os.path.exists(_rules_config_path):
     except Exception:
         pass
 
-# Email alerter (sends emails for high-severity events)
+# Email alerter
 from email_alerter import EmailAlerter
 _email_alerter = EmailAlerter(_rules_config.get("email", {}))
 
-# Camera manager (multi-camera support)
+# WhatsApp alerter
+from whatsapp_alerter import WhatsAppAlerter
+_whatsapp_alerter = WhatsAppAlerter(_rules_config.get("whatsapp", {}))
+
+# Camera manager
 from camera_manager import CameraManager
 _cam_config_path = os.path.join(_BASE_DIR, "config", "camera_config.yaml")
 _cam_manager = CameraManager(_cam_config_path)
 
+# Shift report generator
+from shift_report import generate_report
+
+# Session start time (for shift report duration)
+_session_start = time.time()
 
 app = Flask(__name__)
 app.config["UPLOAD_FOLDER"] = "uploads"
@@ -69,8 +75,6 @@ _alert_log      = []
 _alert_log_lock = threading.Lock()
 _sse_subscribers= []
 _sse_lock       = threading.Lock()
-
-# Track acknowledged alert IDs
 _acknowledged_alerts = set()
 _ack_lock            = threading.Lock()
 
@@ -80,7 +84,6 @@ def allowed_file(fn):
 
 
 def alert_dispatcher():
-    """Drain alert_queue → log + fan out to all SSE clients."""
     today       = datetime.date.today()
     daily_count = 0
 
@@ -93,13 +96,13 @@ def alert_dispatcher():
                 daily_count = 0
             continue
 
-        # Add unique ID and acknowledged flag to each alert
-        alert["id"] = str(uuid.uuid4())[:8]
+        alert["id"]           = str(uuid.uuid4())[:8]
         alert["acknowledged"] = False
 
-        # Send email for high-severity events
+        # Email for high-severity events
         if alert.get("severity") == "high":
             _email_alerter.send(alert)
+            _whatsapp_alerter.send(alert)
 
         daily_count += 1
         streamer.update_stats(alerts_today=daily_count)
@@ -143,7 +146,6 @@ def alerts_stream():
         with _sse_lock:
             _sse_subscribers.append(q)
 
-        # Send recent history on connect so log panel isn't empty
         with _alert_log_lock:
             history = list(_alert_log[-50:])
         for alert in history:
@@ -174,12 +176,6 @@ def api_stats():
 
 @app.route("/api/occupancy")
 def api_occupancy():
-    """
-    Real-time occupancy data:
-    - people_count: current number of persons in frame
-    - dwell_times: { name: seconds_in_frame }
-    - compliance_scores: { name: 0-100 score }
-    """
     s = streamer.stats
     return jsonify({
         "people_count":      s.get("people_count", 0),
@@ -190,20 +186,17 @@ def api_occupancy():
 
 @app.route("/api/analytics")
 def api_analytics():
-    """
-    Compute analytics from the in-memory alert log.
-    """
     with _alert_log_lock:
-        log = list(_alert_log)
+        alerts = list(_alert_log)
 
-    type_counts       = Counter()
-    severity_counts   = Counter({"high": 0, "medium": 0, "low": 0})
-    zone_counts       = Counter()
-    guard_alert_counts= Counter()
-    hourly_counts     = defaultdict(int)
-    guard_zones       = defaultdict(set)
+    type_counts        = Counter()
+    severity_counts    = Counter({"high": 0, "medium": 0, "low": 0})
+    zone_counts        = Counter()
+    guard_alert_counts = Counter()
+    hourly_counts      = defaultdict(int)
+    guard_zones        = defaultdict(set)
 
-    for a in log:
+    for a in alerts:
         alert_type = a.get("type", "")
         severity   = a.get("severity", "low")
         zone       = a.get("zone", "")
@@ -224,13 +217,10 @@ def api_analytics():
             type_counts[alert_type] += 1
 
         severity_counts[severity] += 1
-
         if zone and zone not in ("—", "-", ""):
             zone_counts[zone] += 1
-
         if guard and guard not in ("Post", ""):
             guard_alert_counts[guard] += 1
-
         if timestamp and len(timestamp) >= 2:
             hour_key = timestamp[:2] + ":00"
             hourly_counts[hour_key] += 1
@@ -247,7 +237,7 @@ def api_analytics():
         "guard_alert_counts": dict(guard_alert_counts),
         "guard_compliance":   guard_compliance,
         "hourly_counts":      dict(hourly_counts),
-        "total":              len(log),
+        "total":              len(alerts),
     })
 
 
@@ -259,24 +249,20 @@ def api_upload():
     if not f.filename or not allowed_file(f.filename):
         return jsonify({"error": "Invalid file"}), 400
 
-    # Guard: don't accept upload if pipeline hasn't started yet
     stats = streamer.stats
     if not stats.get("fps") or stats.get("fps") == "—":
         return jsonify({"error": "Camera not ready yet. Please wait a few seconds and try again."}), 503
 
     filename = secure_filename(f.filename)
     filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
-
     file_bytes = f.read()
 
     def save_and_start():
         with open(filepath, "wb") as out:
             out.write(file_bytes)
-        print(f"[upload] Saved {filename} ({len(file_bytes)//1024}KB)")
         main_web.start(source=filepath, source_label=filename)
 
     threading.Thread(target=save_and_start, daemon=True).start()
-
     return jsonify({"ok": True, "file": filename})
 
 
@@ -290,24 +276,21 @@ def api_webcam():
 def api_export():
     fmt = request.args.get("format", "json")
     with _alert_log_lock:
-        log = list(_alert_log)
+        alerts = list(_alert_log)
     if fmt == "csv":
         lines = ["timestamp,type,guard_id,zone,severity,acknowledged"]
-        for a in log:
+        for a in alerts:
             ack = "yes" if a.get("acknowledged") else "no"
             lines.append(f"{a['timestamp']},{a['type']},{a['guard_id']},{a['zone']},{a['severity']},{ack}")
         return Response("\n".join(lines), mimetype="text/csv",
                         headers={"Content-Disposition": "attachment; filename=alerts.csv"})
-    return Response(json.dumps(log, indent=2), mimetype="application/json",
+    return Response(json.dumps(alerts, indent=2), mimetype="application/json",
                     headers={"Content-Disposition": "attachment; filename=alerts.json"})
 
 
-# ── NEW: Alert acknowledgement ────────────────────────────────────────────────
-
 @app.route("/api/alerts/acknowledge", methods=["POST"])
 def api_acknowledge():
-    """Mark an alert as acknowledged by its ID."""
-    data = request.get_json(silent=True) or {}
+    data     = request.get_json(silent=True) or {}
     alert_id = data.get("id")
     if not alert_id:
         return jsonify({"error": "Missing alert id"}), 400
@@ -324,14 +307,9 @@ def api_acknowledge():
     return jsonify({"ok": True, "id": alert_id})
 
 
-# ── NEW: Config endpoint ─────────────────────────────────────────────────────
-
 @app.route("/api/config")
 def api_config():
-    """Return current rules_config.yaml values."""
-    config_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "config", "rules_config.yaml"
-    )
+    config_path = os.path.join(_BASE_DIR, "config", "rules_config.yaml")
     if os.path.exists(config_path):
         try:
             import yaml
@@ -347,56 +325,70 @@ def api_config():
 
 @app.route("/api/perf")
 def api_perf():
-    """Return pipeline performance stats and recent system log."""
-    log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "src", "logs", "system.log")
+    log_path = os.path.join(_BASE_DIR, "src", "logs", "system.log")
     recent_logs = []
-    perf_stats = {}
+    perf_stats  = {}
     if os.path.exists(log_path):
         try:
             with open(log_path, "r", encoding="utf-8", errors="replace") as f:
                 lines = f.readlines()
             recent_logs = [l.rstrip() for l in lines[-100:]]
-
-            # Extract latest perf stats from log
             for line in reversed(lines):
                 if "Perf stats |" in line and "(no data)" not in line:
-                    # Parse: "face_recognition: 541.1ms | person_detection: 71.4ms"
                     parts = line.split("Perf stats |", 1)
                     if len(parts) > 1:
                         for segment in parts[1].strip().split(" | "):
                             if ":" in segment and "ms" in segment:
                                 key, val = segment.split(":", 1)
                                 avg_ms = float(val.strip().replace("ms avg", "").replace("ms", "").strip())
-                                perf_stats[key.strip()] = {
-                                    "avg_ms": avg_ms,
-                                    "calls": 1,
-                                }
+                                perf_stats[key.strip()] = {"avg_ms": avg_ms, "calls": 1}
                     break
         except Exception:
             pass
-    return jsonify({
-        "log_lines":  recent_logs,
-        "log_path":   log_path,
-        "perf_stats": perf_stats,
-    })
+    return jsonify({"log_lines": recent_logs, "log_path": log_path, "perf_stats": perf_stats})
 
 
-# ── Multi-camera API ─────────────────────────────────────────────────────────
+# ── Shift Report ──────────────────────────────────────────────────────────────
+
+@app.route("/api/report/generate")
+def api_report_generate():
+    """Generate a Shift Intelligence Report and serve it as HTML."""
+    with _alert_log_lock:
+        alerts = list(_alert_log)
+
+    html = generate_report(
+        alert_log=alerts,
+        stats=streamer.stats,
+        session_start=_session_start,
+    )
+
+    # Serve inline (opens in browser tab) or as download
+    as_file = request.args.get("download", "false").lower() == "true"
+    disposition = "attachment" if as_file else "inline"
+    filename = f"GMS_ShiftReport_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.html"
+
+    return Response(
+        html,
+        mimetype="text/html",
+        headers={
+            "Content-Disposition": f"{disposition}; filename={filename}"
+        }
+    )
+
+
+# ── Multi-camera API ──────────────────────────────────────────────────────────
 
 @app.route("/api/cameras")
 def api_cameras():
-    """List all configured cameras with their status."""
     return jsonify({
         "multi_camera": _cam_manager.is_multi_camera,
-        "default": _cam_manager.default_camera,
-        "cameras": _cam_manager.get_cameras_list(),
+        "default":      _cam_manager.default_camera,
+        "cameras":      _cam_manager.get_cameras_list(),
     })
 
 
 @app.route("/video_feed/<cam_id>")
 def video_feed_cam(cam_id):
-    """MJPEG stream for a specific camera (multi-camera mode)."""
     cam_streamer = _cam_manager.get_streamer(cam_id)
     if not cam_streamer:
         return "Camera not found", 404
@@ -408,7 +400,6 @@ def video_feed_cam(cam_id):
 
 @app.route("/api/cameras/<cam_id>/stats")
 def api_camera_stats(cam_id):
-    """Stats for a specific camera."""
     cam_streamer = _cam_manager.get_streamer(cam_id)
     if not cam_streamer:
         return jsonify({"error": "Camera not found"}), 404
@@ -421,11 +412,9 @@ if __name__ == "__main__":
     threading.Thread(target=alert_dispatcher, daemon=True).start()
 
     if _cam_manager.is_multi_camera:
-        # Multi-camera mode — start all enabled cameras
         _cam_manager.start_all()
         print(f"\n  Multi-camera mode — {len(_cam_manager.cameras)} cameras configured")
     else:
-        # Single-camera mode (backward compatible)
         main_web.start(source=0, source_label="Camera 0")
 
     print("\n  Dashboard → http://127.0.0.1:5000\n")

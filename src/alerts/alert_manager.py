@@ -3,7 +3,6 @@ import datetime
 import sys
 import os
 
-# Add src to path so utils.logger is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 try:
     from utils.logger import get_logger
@@ -13,7 +12,6 @@ except Exception:
 
 alert_queue = queue.Queue()
 
-# ── Severity mapping ──────────────────────────────────────────────────────────
 _SEVERITY = {
     # HIGH
     "Guard Missing":                    "high",
@@ -61,10 +59,8 @@ class AlertManager:
             "timestamp": timestamp,
         }
 
-        # Send to SSE queue for dashboard
         alert_queue.put(alert)
 
-        # Log to system.log with appropriate level
         msg = f"[ALERT] {alert_type} | {guard_id} | Zone {zone} | {severity.upper()}"
         print(f"[ALERT] [{timestamp}] {alert_type} : {guard_id}")
 
