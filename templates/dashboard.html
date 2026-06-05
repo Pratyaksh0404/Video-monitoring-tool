@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>GMS — Guard Monitoring System</title>
-<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%230d0f12'/><circle cx='16' cy='16' r='7' fill='none' stroke='%2322c55e' stroke-width='2.5'/><circle cx='16' cy='16' r='3' fill='%2322c55e'/></svg>">
+<link rel="icon" id="favicon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%230d0f12'/><circle cx='16' cy='16' r='7' fill='none' stroke='%2322c55e' stroke-width='2.5'/><circle cx='16' cy='16' r='3' fill='%2322c55e'/></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
@@ -956,6 +956,40 @@
     user-select: none;
   }
   .log-auto-toggle input { accent-color: var(--accent); }
+
+  /* ── Snapshot cards ───────────────────────────────────────── */
+  .snap-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+    cursor: pointer;
+    transition: border-color 0.15s;
+  }
+  .snap-card:hover { border-color: var(--accent); }
+  .snap-card img {
+    width: 100%;
+    height: 100px;
+    object-fit: cover;
+    display: block;
+  }
+  .snap-card-meta {
+    padding: 5px 7px;
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .snap-card-label {
+    font-size: 10px;
+    color: var(--text);
+    margin-bottom: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 </style>
 </head>
 <body>
@@ -1282,6 +1316,21 @@
       </div>
     </div>
 
+    <!-- Snapshots row -->
+    <div class="an-row">
+      <div class="an-card full">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+          <div class="an-card-title" style="margin-bottom:0;">Alert Snapshots</div>
+          <span style="font-family:var(--mono);font-size:10px;color:var(--muted);">Last 20 high-severity frames</span>
+        </div>
+        <div id="snapshots-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;">
+          <div style="color:var(--muted);font-family:var(--mono);font-size:11px;padding:12px 0;">
+            No snapshots yet — fires on weapon, fire, tamper, sleep, missing alerts.
+          </div>
+        </div>
+      </div>
+    </div>
+
   </div><!-- /view-analytics -->
 
   <!-- ═══════════════════════════════════════════════════════
@@ -1561,11 +1610,12 @@ function appendAlert(a, isNew) {
   const items = list.querySelectorAll('.log-item');
   if (items.length > 200) items[items.length - 1].remove();
 
-  // HIGH severity: beep + browser notification
+  // HIGH severity: beep + browser notification + tab alert
   if (isNew && a.severity === 'high') {
     showToast(a.type + ' — ' + a.guard_id, true);
     playAlertBeep();
     sendBrowserNotification('GMS Alert: ' + a.type, a.guard_id + ' — Zone ' + a.zone);
+    _onTabAlertHigh();
   }
 }
 
@@ -1873,6 +1923,7 @@ function loadAnalytics() {
     .then(r => r.json())
     .then(renderAnalytics)
     .catch(err => console.warn('[analytics] fetch error:', err));
+  loadSnapshots();
 }
 
 function renderAnalytics(d) {
@@ -2193,6 +2244,30 @@ function renderHourlyChart(hourlyCounts) {
   });
 }
 
+// ── Snapshots ──────────────────────────────────────────────────
+function loadSnapshots() {
+  fetch('/api/snapshots')
+    .then(r => r.json())
+    .then(snaps => {
+      const grid = document.getElementById('snapshots-grid');
+      if (!grid) return;
+      if (!snaps.length) {
+        grid.innerHTML = '<div style="color:var(--muted);font-family:var(--mono);font-size:11px;padding:12px 0;">No snapshots yet — fires on weapon, fire, tamper, sleep, missing alerts.</div>';
+        return;
+      }
+      grid.innerHTML = snaps.map(s => `
+        <div class="snap-card" onclick="window.open('/api/snapshots/${escHtml(s.filename)}','_blank')" title="${escHtml(s.label)}">
+          <img src="/api/snapshots/${escHtml(s.filename)}" alt="${escHtml(s.label)}" loading="lazy">
+          <div style="padding:5px 7px;">
+            <div class="snap-card-label">${escHtml(s.label)}</div>
+            <div class="snap-card-meta">${escHtml(s.ts)} · ${s.size_kb}KB</div>
+          </div>
+        </div>
+      `).join('');
+    })
+    .catch(() => {});
+}
+
 // ── Shift Report ──────────────────────────────────────────────
 function generateReport() {
   const btn = document.getElementById('btn-report');
@@ -2223,5 +2298,70 @@ function generateReport() {
     }
   }, 2000);
 }
+
+
+// ── Browser tab alerts ─────────────────────────────────────────
+// Tracks unread HIGH severity alerts when tab is not focused.
+// Tab title: "⚠ 3 ALERTS — GMS" | Favicon: red pulsing dot
+// Resets when user focuses the tab.
+
+let _tabUnreadCount  = 0;
+let _tabPulseTimer   = null;
+let _tabPulseState   = false;
+const _titleBase     = 'GMS — Guard Monitoring System';
+
+const _faviconGreen = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%230d0f12'/><circle cx='16' cy='16' r='7' fill='none' stroke='%2322c55e' stroke-width='2.5'/><circle cx='16' cy='16' r='3' fill='%2322c55e'/></svg>";
+const _faviconRed   = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%230d0f12'/><circle cx='16' cy='16' r='8' fill='%23ef4444'/><text x='16' y='21' text-anchor='middle' font-size='14' font-weight='bold' fill='white'>!</text></svg>";
+
+function _setFavicon(url) {
+  const el = document.getElementById('favicon');
+  if (el) el.href = url;
+}
+
+function _startTabPulse() {
+  if (_tabPulseTimer) return;
+  _tabPulseTimer = setInterval(() => {
+    _tabPulseState = !_tabPulseState;
+    if (_tabPulseState) {
+      document.title = `⚠ ${_tabUnreadCount} ALERT${_tabUnreadCount !== 1 ? 'S' : ''} — GMS`;
+      _setFavicon(_faviconRed);
+    } else {
+      document.title = _titleBase;
+      _setFavicon(_faviconGreen);
+    }
+  }, 1200);
+}
+
+function _stopTabPulse() {
+  if (_tabPulseTimer) {
+    clearInterval(_tabPulseTimer);
+    _tabPulseTimer = null;
+  }
+  document.title = _titleBase;
+  _setFavicon(_faviconGreen);
+}
+
+function _onTabAlertHigh() {
+  // Only track when tab is hidden (user is elsewhere)
+  if (document.hidden) {
+    _tabUnreadCount++;
+    _startTabPulse();
+  }
+}
+
+function _resetTabAlerts() {
+  _tabUnreadCount = 0;
+  _stopTabPulse();
+}
+
+// Reset when user comes back to the tab
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) {
+    _resetTabAlerts();
+  }
+});
+
+// Also reset on window focus
+window.addEventListener('focus', _resetTabAlerts);
 
 </script>

@@ -22,5 +22,6 @@ Thumbs.db
 uploads/
 model_cache/
 src/data
-
+src/snapshots
+src/logs/system.log
 PyWhatKit_DB.txt

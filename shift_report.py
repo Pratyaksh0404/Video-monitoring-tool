@@ -18,7 +18,8 @@ import json
 from collections import Counter, defaultdict
 
 
-def generate_report(alert_log: list, stats: dict, session_start: float) -> str:
+def generate_report(alert_log: list, stats: dict, session_start: float,
+                    snapshots: list = None) -> str:
     """
     Generate a self-contained HTML shift report.
 
@@ -357,8 +358,38 @@ def generate_report(alert_log: list, stats: dict, session_start: float) -> str:
     overflow-y: auto;
   }}
 
-  /* ── Footer ── */
-  .report-footer {{
+  /* ── Snapshot grid ── */
+  .snap-grid {{
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 12px;
+    margin-top: 12px;
+  }}
+  .snap-thumb {{
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    overflow: hidden;
+  }}
+  .snap-thumb img {{
+    width: 100%;
+    height: 110px;
+    object-fit: cover;
+    display: block;
+  }}
+  .snap-thumb-meta {{
+    padding: 6px 8px;
+    font-size: 10px;
+    color: #64748b;
+  }}
+  .snap-thumb-label {{
+    font-size: 11px;
+    font-weight: 600;
+    color: #374151;
+    margin-bottom: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }}
     text-align: center;
     font-size: 10px;
     color: #94a3b8;
@@ -507,6 +538,8 @@ def generate_report(alert_log: list, stats: dict, session_start: float) -> str:
       </table>
     </div>
   </div>
+
+  {_build_snapshots_section(snapshots or [])}
 
   <!-- Footer -->
   <div class="report-footer">
@@ -820,6 +853,45 @@ def _build_severity_svg(severity_counts: Counter) -> str:
 
     svg_parts.append('</svg>')
     return "".join(svg_parts)
+
+
+def _build_snapshots_section(snapshots: list) -> str:
+    """Build HTML section showing alert snapshot thumbnails."""
+    import os
+    import base64
+    if not snapshots:
+        return ""
+    # Embed images as base64 so the HTML file is self-contained
+    import base64
+    cards = []
+    for s in snapshots[:12]:  # max 12 in report
+        path = s.get("_path") or ""
+        if not path or not os.path.exists(path):
+            continue
+        try:
+            with open(path, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode()
+            cards.append(f"""
+            <div class="snap-thumb">
+              <img src="data:image/jpeg;base64,{b64}" alt="{_esc(s.get('label',''))}">
+              <div class="snap-thumb-meta">
+                <div class="snap-thumb-label">{_esc(s.get('label',''))}</div>
+                {_esc(s.get('ts',''))}
+              </div>
+            </div>""")
+        except Exception:
+            pass
+
+    if not cards:
+        return ""
+
+    return f"""
+  <div class="card">
+    <div class="card-title">Alert Snapshots ({len(cards)} frames)</div>
+    <div class="snap-grid">
+      {''.join(cards)}
+    </div>
+  </div>"""
 
 
 def _esc(s) -> str:

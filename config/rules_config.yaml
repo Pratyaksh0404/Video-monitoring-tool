@@ -40,14 +40,14 @@ behavior:
   idle_max_speed: 12.0
   clip_thresholds:
     NORMAL: 0.25
-    SLEEPING: 0.65           # raised — looking down at phone ≠ sleeping
+    SLEEPING: 0.75           # high threshold — only confirm when clearly sleeping
     PHONE_USE: 0.50
     IDLE: 0.50
     DISTRACTED_OTHER: 0.45
     SMOKING: 0.70
   confirm_ratios:
     SMOKING: 0.85
-    SLEEPING: 0.88           # raised — needs 7 of 8 readings + not_is_moving gate
+    SLEEPING: 0.90           # very strict — needs 9 of 10 readings consistently
     PHONE_USE: 0.60
     IDLE: 0.60
     DISTRACTED_OTHER: 0.55

@@ -29,8 +29,10 @@ import main_web
 from video_streamer import streamer
 from alerts.alert_manager import alert_queue
 from utils.logger import get_logger
+from snapshot_manager import SnapshotManager
 
 log = get_logger("flask_app")
+_snap_mgr = SnapshotManager()
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -356,10 +358,16 @@ def api_report_generate():
     with _alert_log_lock:
         alerts = list(_alert_log)
 
+    # Get snapshots with full paths for embedding in report
+    snaps = _snap_mgr.list_snapshots()
+    for s in snaps:
+        s["_path"] = _snap_mgr.get_path(s["filename"])
+
     html = generate_report(
         alert_log=alerts,
         stats=streamer.stats,
         session_start=_session_start,
+        snapshots=snaps,
     )
 
     # Serve inline (opens in browser tab) or as download
@@ -374,6 +382,22 @@ def api_report_generate():
             "Content-Disposition": f"{disposition}; filename={filename}"
         }
     )
+
+
+@app.route("/api/snapshots")
+def api_snapshots():
+    """List all saved alert snapshots, newest first."""
+    return jsonify(_snap_mgr.list_snapshots())
+
+
+@app.route("/api/snapshots/<filename>")
+def api_snapshot_image(filename):
+    """Serve a snapshot image by filename."""
+    path = _snap_mgr.get_path(filename)
+    if not path:
+        return "Not found", 404
+    from flask import send_file
+    return send_file(path, mimetype="image/jpeg")
 
 
 # ── Multi-camera API ──────────────────────────────────────────────────────────

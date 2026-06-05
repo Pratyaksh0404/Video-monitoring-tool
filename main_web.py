@@ -24,6 +24,7 @@ from analytics.unknown_tracker import UnknownTracker
 from alerts.alert_manager import AlertManager
 from analytics.anomaly_detector import AnomalyDetector
 from analytics.camera_tamper import CameraTamper
+from snapshot_manager import SnapshotManager
 from video_streamer import streamer
 from utils.logger import get_logger
 from utils.timer import PipelineTimer
@@ -285,6 +286,7 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
     fight_det       = FightDetector()
     unknown_tracker = UnknownTracker()
     camera_tamper   = CameraTamper()
+    snap_mgr        = SnapshotManager()
     timer           = PipelineTimer()
 
     log.info("Waiting for first frame...")
@@ -365,6 +367,7 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
             if tamper_event:
                 alert_manager.send_alert(
                     f"Camera Tamper: {tamper_event}", "Camera", zone="—")
+                snap_mgr.save(frame, f"Camera Tamper: {tamper_event}", "Camera", "—")
 
             # ── Detection ────────────────────────────────────────────────────
             timer.start("person_detection")
@@ -457,6 +460,7 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                                 f"Fire Detected: {t}", "Camera", zone="—")
                             last_alert_time["fire"] = now
                             active_violations.add("Fire")
+                            snap_mgr.save(frame, f"Fire Detected: {t}", "Camera", "—")
 
                     cv2.putText(frame,
                                 f"FIRE DETECTED: {fire_res.get('threat','')} "
@@ -713,6 +717,8 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                         alert_manager.send_alert(msg, _gid, zone=_zone)
                         last_alert_time[key] = _t
                         active_violations.add(msg)
+                        # Save annotated snapshot for HIGH severity events
+                        snap_mgr.save(frame, msg, _gid, _zone)
 
                 is_moving = person_speed > IDLE_MAX_SPEED
 
@@ -741,6 +747,7 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                     if anomaly_label == "WEAPON" and anomaly_threat:
                         send_alert(f"weapon:{guard_id}:{anomaly_threat}",
                                    f"Weapon Detected: {anomaly_threat}")
+
 
                 else:
                     sideways_suppressed = False
