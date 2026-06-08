@@ -957,7 +957,10 @@
   }
   .log-auto-toggle input { accent-color: var(--accent); }
 
-  /* ── Snapshot cards ───────────────────────────────────────── */
+
+
+  /* Tooltip */
+
   .snap-card {
     background: var(--surface);
     border: 1px solid var(--border);
@@ -1172,6 +1175,9 @@
         <span class="an-refresh-hint" id="an-last-updated"></span>
         <button class="an-refresh-btn" onclick="generateReport()" style="border-color:#22c55e;color:#22c55e;" id="btn-report">
           ⬇ Generate Report
+        </button>
+        <button class="an-refresh-btn" onclick="sendReport()" style="border-color:#3b82f6;color:#3b82f6;" id="btn-send-report">
+          ✉ Send Report
         </button>
         <button class="an-refresh-btn" onclick="loadAnalytics()">↻ Refresh</button>
       </div>
@@ -1417,6 +1423,8 @@
 
 <!-- Toast -->
 <div class="toast" id="toast"></div>
+
+<!-- Timeline tooltip -->
 
 <script>
 // ══════════════════════════════════════════════════════════
@@ -2244,6 +2252,20 @@ function renderHourlyChart(hourlyCounts) {
   });
 }
 
+// ── Guard activity timeline ────────────────────────────────────
+
+function showTLTooltip(e, el) {
+  tip.innerHTML =
+    `<strong>${escHtml(el.dataset.type)}</strong><br>` +
+    `${escHtml(el.dataset.guard)} · Zone ${escHtml(el.dataset.zone)} · ${escHtml(el.dataset.ts)}`;
+  tip.style.display = 'block';
+  tip.style.left    = (e.clientX + 12) + 'px';
+  tip.style.top     = (e.clientY - 10) + 'px';
+}
+
+function hideTLTooltip() {
+}
+
 // ── Snapshots ──────────────────────────────────────────────────
 function loadSnapshots() {
   fetch('/api/snapshots')
@@ -2269,6 +2291,22 @@ function loadSnapshots() {
 }
 
 // ── Shift Report ──────────────────────────────────────────────
+function sendReport() {
+  const btn = document.getElementById('btn-send-report');
+  if (btn) { btn.textContent = '⏳ Sending…'; btn.disabled = true; btn.style.opacity = '0.6'; }
+  fetch('/api/report/send', {method: 'POST'})
+    .then(r => r.json())
+    .then(() => {
+      showToast('Report sent via email', false);
+    })
+    .catch(() => showToast('Report send failed', true))
+    .finally(() => {
+      setTimeout(() => {
+        if (btn) { btn.textContent = '✉ Send Report'; btn.disabled = false; btn.style.opacity = '1'; }
+      }, 3000);
+    });
+}
+
 function generateReport() {
   const btn = document.getElementById('btn-report');
   if (btn) {

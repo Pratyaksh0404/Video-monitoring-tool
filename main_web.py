@@ -24,7 +24,7 @@ from analytics.unknown_tracker import UnknownTracker
 from alerts.alert_manager import AlertManager
 from analytics.anomaly_detector import AnomalyDetector
 from analytics.camera_tamper import CameraTamper
-from snapshot_manager import SnapshotManager
+from snapshot_manager import snap_mgr
 from video_streamer import streamer
 from utils.logger import get_logger
 from utils.timer import PipelineTimer
@@ -286,8 +286,13 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
     fight_det       = FightDetector()
     unknown_tracker = UnknownTracker()
     camera_tamper   = CameraTamper()
-    snap_mgr        = SnapshotManager()
     timer           = PipelineTimer()
+
+    # Wire live frame source for burst snapshots (frames 2 and 3)
+    snap_mgr.set_frame_source(
+        lambda: effective_streamer.get_frame_raw()
+        if hasattr(effective_streamer, "get_frame_raw") else None
+    )
 
     log.info("Waiting for first frame...")
     for _ in range(50):
@@ -365,9 +370,9 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
             # ── Camera tamper check ───────────────────────────────────────────
             tamper_event = camera_tamper.update(frame)
             if tamper_event:
+                snap_mgr.save(frame, f"Camera Tamper: {tamper_event}", "Camera", "—")
                 alert_manager.send_alert(
                     f"Camera Tamper: {tamper_event}", "Camera", zone="—")
-                snap_mgr.save(frame, f"Camera Tamper: {tamper_event}", "Camera", "—")
 
             # ── Detection ────────────────────────────────────────────────────
             timer.start("person_detection")
@@ -433,6 +438,7 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
             # ── 1. Crowd ──────────────────────────────────────────────────────
             if is_crowd:
                 if now - last_alert_time.get("crowd", 0) > ALERT_COOLDOWN:
+                    snap_mgr.save(frame, "Crowd Detected", "Camera", "—")
                     alert_manager.send_alert("Crowd Detected", "Camera", zone="—")
                     last_alert_time["crowd"] = now
                     active_violations.add("Crowd")
@@ -456,11 +462,11 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                     if len(fire_hits) >= FIRE_MIN_CONSECUTIVE:
                         if now - last_alert_time.get("fire", 0) > ALERT_COOLDOWN:
                             t = fire_res.get("threat") or "Fire"
+                            snap_mgr.save(frame, f"Fire Detected: {t}", "Camera", "—")
                             alert_manager.send_alert(
                                 f"Fire Detected: {t}", "Camera", zone="—")
                             last_alert_time["fire"] = now
                             active_violations.add("Fire")
-                            snap_mgr.save(frame, f"Fire Detected: {t}", "Camera", "—")
 
                     cv2.putText(frame,
                                 f"FIRE DETECTED: {fire_res.get('threat','')} "
@@ -498,6 +504,7 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                             alert_manager.send_alert(
                                 f"Unattended Weapon Detected: {threat}",
                                 "Camera", zone="—")
+                            snap_mgr.save(frame, f"Unattended Weapon Detected: {threat}", "Camera", "—")
                             last_alert_time[key] = now
                             active_violations.add("Weapon")
                     else:
@@ -512,6 +519,7 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                             if now - last_alert_time.get(key, 0) > ALERT_COOLDOWN:
                                 alert_manager.send_alert(
                                     f"Weapon Detected: {threat}", gid, zone="—")
+                                snap_mgr.save(frame, "Weapon Detected", f"{threat}", gid)
                                 last_alert_time[key] = now
                                 active_violations.add("Weapon")
 
@@ -714,11 +722,10 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                 def send_alert(key, msg,
                                _gid=alert_name, _zone=display_zone, _t=now):
                     if _t - last_alert_time.get(key, 0) > ALERT_COOLDOWN:
+                        snap_mgr.save(frame, msg, _gid, _zone)
                         alert_manager.send_alert(msg, _gid, zone=_zone)
                         last_alert_time[key] = _t
                         active_violations.add(msg)
-                        # Save annotated snapshot for HIGH severity events
-                        snap_mgr.save(frame, msg, _gid, _zone)
 
                 is_moving = person_speed > IDLE_MAX_SPEED
 
@@ -797,6 +804,7 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
             if post_status == "ABSENT":
                 now = time.time()
                 if now - last_alert_time.get("post_missing", 0) > MISSING_COOLDOWN:
+                    snap_mgr.save(frame, "Guard Missing", last_seen_guard_name, "—")
                     alert_manager.send_alert(
                         "Guard Missing", last_seen_guard_name, zone="—")
                     last_alert_time["post_missing"] = now
@@ -865,7 +873,29 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
         log.info("Pipeline loop ended.")
 
 
+_program_initialized = False  # True after first run() call
+
+
 def _run_with_restart(source, source_label):
+    global _program_initialized
+
+    # ── One-time program-start init (not per source-switch) ──────────────────
+    if not _program_initialized:
+        _program_initialized = True
+
+        # Create fresh snapshot session folder
+        snap_mgr.new_session()
+
+        # Clear system.log
+        _log_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "src", "logs", "system.log"
+        )
+        try:
+            if os.path.exists(_log_path):
+                open(_log_path, "w").close()
+        except Exception:
+            pass
+
     beh_label_cache = {}
     beh_cache_lock  = threading.Lock()
     worker          = BehaviorWorker(beh_label_cache, beh_cache_lock)

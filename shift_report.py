@@ -18,8 +18,7 @@ import json
 from collections import Counter, defaultdict
 
 
-def generate_report(alert_log: list, stats: dict, session_start: float,
-                    snapshots: list = None) -> str:
+def generate_report(alert_log: list, stats: dict, session_start: float) -> str:
     """
     Generate a self-contained HTML shift report.
 
@@ -539,7 +538,6 @@ def generate_report(alert_log: list, stats: dict, session_start: float,
     </div>
   </div>
 
-  {_build_snapshots_section(snapshots or [])}
 
   <!-- Footer -->
   <div class="report-footer">
@@ -854,44 +852,6 @@ def _build_severity_svg(severity_counts: Counter) -> str:
     svg_parts.append('</svg>')
     return "".join(svg_parts)
 
-
-def _build_snapshots_section(snapshots: list) -> str:
-    """Build HTML section showing alert snapshot thumbnails."""
-    import os
-    import base64
-    if not snapshots:
-        return ""
-    # Embed images as base64 so the HTML file is self-contained
-    import base64
-    cards = []
-    for s in snapshots[:12]:  # max 12 in report
-        path = s.get("_path") or ""
-        if not path or not os.path.exists(path):
-            continue
-        try:
-            with open(path, "rb") as f:
-                b64 = base64.b64encode(f.read()).decode()
-            cards.append(f"""
-            <div class="snap-thumb">
-              <img src="data:image/jpeg;base64,{b64}" alt="{_esc(s.get('label',''))}">
-              <div class="snap-thumb-meta">
-                <div class="snap-thumb-label">{_esc(s.get('label',''))}</div>
-                {_esc(s.get('ts',''))}
-              </div>
-            </div>""")
-        except Exception:
-            pass
-
-    if not cards:
-        return ""
-
-    return f"""
-  <div class="card">
-    <div class="card-title">Alert Snapshots ({len(cards)} frames)</div>
-    <div class="snap-grid">
-      {''.join(cards)}
-    </div>
-  </div>"""
 
 
 def _esc(s) -> str:

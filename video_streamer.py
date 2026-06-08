@@ -35,6 +35,16 @@ class VideoStreamer:
         with self._lock:
             return self._frame_bytes
 
+    def get_frame_raw(self):
+        """Return latest frame as decoded BGR numpy array (for burst snapshots)."""
+        import numpy as np
+        with self._lock:
+            buf = self._frame_bytes
+        if buf is None:
+            return None
+        arr = np.frombuffer(buf, dtype=np.uint8)
+        return cv2.imdecode(arr, cv2.IMREAD_COLOR)
+
     def generate_mjpeg(self):
         while True:
             frame = self.get_frame()

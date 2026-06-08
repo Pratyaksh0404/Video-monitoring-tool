@@ -29,10 +29,9 @@ import main_web
 from video_streamer import streamer
 from alerts.alert_manager import alert_queue
 from utils.logger import get_logger
-from snapshot_manager import SnapshotManager
+from snapshot_manager import snap_mgr as _snap_mgr
 
 log = get_logger("flask_app")
-_snap_mgr = SnapshotManager()
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -62,7 +61,10 @@ _cam_manager = CameraManager(_cam_config_path)
 # Shift report generator
 from shift_report import generate_report
 
-# Session start time (for shift report duration)
+# Wire snapshot manager into email alerter so emails can attach burst snapshots
+_email_alerter.set_snapshot_manager(_snap_mgr)
+
+# Session start time — updated each time a new session begins
 _session_start = time.time()
 
 app = Flask(__name__)
@@ -101,9 +103,12 @@ def alert_dispatcher():
         alert["id"]           = str(uuid.uuid4())[:8]
         alert["acknowledged"] = False
 
-        # Email for high-severity events
+        # Email ALL alerts except Guard Idle and Patrol
+        # (should_send in EmailAlerter handles the filtering)
+        _email_alerter.send(alert)
+
+        # WhatsApp batches HIGH severity alerts
         if alert.get("severity") == "high":
-            _email_alerter.send(alert)
             _whatsapp_alerter.send(alert)
 
         daily_count += 1
@@ -124,6 +129,45 @@ def alert_dispatcher():
                     dead.append(q)
             for q in dead:
                 _sse_subscribers.remove(q)
+
+
+def send_session_report():
+    """
+    Generate and deliver the shift report for the CURRENT (ending) session.
+    Captures alert_log and stats snapshot before the new session resets them.
+    Called when source switches — that's the session boundary.
+    """
+    global _session_start
+
+    try:
+        # Capture session data NOW before new session resets anything
+        with _alert_log_lock:
+            alerts = list(_alert_log)
+
+        # Capture stats snapshot
+        session_stats = dict(streamer.stats)
+        session_start = _session_start
+
+        # Skip near-empty sessions (e.g. immediate switch after startup)
+        if len(alerts) < 3:
+            log.info("Session too short — skipping report delivery.")
+            return
+
+        html = generate_report(
+            alert_log=alerts,
+            stats=session_stats,
+            session_start=session_start,
+        )
+
+        # Email report (HTML attached)
+        _email_alerter.send_report(html, session_stats)
+
+        # WhatsApp summary (text only, high+smoking incidents)
+        #_whatsapp_alerter.send_session_summary(alerts, session_stats)
+
+        log.info("Session report sent via email")
+    except Exception as e:
+        log.error(f"Session report send failed: {e}", exc_info=True)
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -352,22 +396,23 @@ def api_perf():
 
 # ── Shift Report ──────────────────────────────────────────────────────────────
 
+@app.route("/api/report/send", methods=["POST"])
+def api_report_send():
+    """Manually trigger session report delivery via email and WhatsApp."""
+    threading.Thread(target=send_session_report, daemon=True).start()
+    return jsonify({"ok": True, "message": "Report delivery started"})
+
+
 @app.route("/api/report/generate")
 def api_report_generate():
     """Generate a Shift Intelligence Report and serve it as HTML."""
     with _alert_log_lock:
         alerts = list(_alert_log)
 
-    # Get snapshots with full paths for embedding in report
-    snaps = _snap_mgr.list_snapshots()
-    for s in snaps:
-        s["_path"] = _snap_mgr.get_path(s["filename"])
-
     html = generate_report(
         alert_log=alerts,
         stats=streamer.stats,
         session_start=_session_start,
-        snapshots=snaps,
     )
 
     # Serve inline (opens in browser tab) or as download
@@ -382,6 +427,69 @@ def api_report_generate():
             "Content-Disposition": f"{disposition}; filename={filename}"
         }
     )
+
+
+@app.route("/api/timeline")
+def api_timeline():
+    """
+    Build per-guard activity timeline from the alert log.
+    Returns events grouped by guard with timestamps, used to render
+    a color-coded horizontal timeline strip in the Analytics tab.
+    """
+    with _alert_log_lock:
+        alerts = list(_alert_log)
+
+    if not alerts:
+        return jsonify({"guards": {}, "session_start": None, "session_end": None})
+
+    # Collect per-guard events sorted by time
+    from collections import defaultdict
+    guard_events = defaultdict(list)
+
+    # Parse HH:MM:SS timestamps into comparable values (seconds since midnight)
+    def ts_to_secs(ts):
+        try:
+            parts = ts.split(":")
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+        except Exception:
+            return 0
+
+    for a in alerts:
+        guard = a.get("guard_id", "")
+        atype = a.get("type", "")
+        ts    = a.get("timestamp", "")
+        sev   = a.get("severity", "low")
+
+        # Skip Camera/Post entries and patrols for named guards
+        if not guard or guard in ("Camera", "Post"):
+            continue
+
+        guard_events[guard].append({
+            "type":      atype,
+            "severity":  sev,
+            "timestamp": ts,
+            "secs":      ts_to_secs(ts),
+            "zone":      a.get("zone", ""),
+        })
+
+    if not guard_events:
+        return jsonify({"guards": {}, "session_start": None, "session_end": None})
+
+    # Find session time range across all events
+    all_secs = [e["secs"] for evs in guard_events.values() for e in evs if e["secs"] > 0]
+    session_start = min(all_secs) if all_secs else 0
+    session_end   = max(all_secs) if all_secs else 0
+
+    # Sort events per guard
+    result = {}
+    for guard, events in guard_events.items():
+        result[guard] = sorted(events, key=lambda e: e["secs"])
+
+    return jsonify({
+        "guards":        result,
+        "session_start": session_start,
+        "session_end":   session_end,
+    })
 
 
 @app.route("/api/snapshots")
@@ -432,7 +540,49 @@ def api_camera_stats(cam_id):
 
 # ── Startup ───────────────────────────────────────────────────────────────────
 
+_exit_triggered = False
+
+
+def _on_exit():
+    """Auto-send session report when the program exits (Ctrl+C or normal exit)."""
+    print("\n[GMS] Shutting down — sending session report...")
+    try:
+        send_session_report()
+        # Give email/WhatsApp threads a moment to finish
+        import time as _t
+        _t.sleep(3)
+    except Exception as e:
+        print(f"[GMS] Report send on exit failed: {e}")
+
+
 if __name__ == "__main__":
+    import atexit
+    import signal
+
+    # Register auto-report on normal exit
+    atexit.register(_on_exit)
+
+    # Handle Ctrl+C gracefully — send report then exit
+    _original_sigint = signal.getsignal(signal.SIGINT)
+    def _sigint_handler(signum, frame):
+        global _exit_triggered
+        if _exit_triggered:
+            # Second Ctrl+C — force exit
+            import sys
+            sys.exit(1)
+        _exit_triggered = True
+        print("\n[GMS] Caught Ctrl+C — sending report before exit...")
+        try:
+            send_session_report()
+            import time as _t
+            _t.sleep(3)
+        except Exception:
+            pass
+        import sys
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, _sigint_handler)
+
     threading.Thread(target=alert_dispatcher, daemon=True).start()
 
     if _cam_manager.is_multi_camera:
