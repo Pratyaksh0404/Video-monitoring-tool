@@ -369,6 +369,89 @@ def api_config():
     return jsonify({"error": "Config file not found"}), 404
 
 
+@app.route("/api/config/update", methods=["POST"])
+def api_config_update():
+    """
+    Receive a partial config dict from the Settings UI, deep-merge it into
+    the existing YAML, write it back to disk, then hot-reload main_web globals.
+
+    Uses ruamel.yaml for the read+write cycle so that all comments, blank lines,
+    and key order in rules_config.yaml are preserved exactly.
+    Only the keys sent by the client are updated — everything else is untouched.
+
+    Falls back to plain PyYAML if ruamel.yaml is not installed (comments lost,
+    but values are still saved correctly).
+    """
+    config_path = os.path.join(_BASE_DIR, "config", "rules_config.yaml")
+
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "No JSON body"}), 400
+
+    # ── Deep merge helper (works on both plain dicts and ruamel CommentedMaps) ─
+    def deep_merge(base, updates):
+        for k, v in updates.items():
+            if isinstance(v, dict) and k in base and hasattr(base[k], 'items'):
+                deep_merge(base[k], v)
+            else:
+                base[k] = v
+
+    # ── Try ruamel.yaml first (preserves comments) ────────────────────────────
+    try:
+        from ruamel.yaml import YAML
+        ry = YAML()
+        ry.preserve_quotes = True
+
+        # Load — ruamel returns a CommentedMap that carries all comment metadata
+        with open(config_path, "r", encoding="utf-8") as f:
+            current = ry.load(f) or {}
+
+        deep_merge(current, data)
+
+        with open(config_path, "w", encoding="utf-8") as f:
+            ry.dump(current, f)
+
+        log.info("Config saved with ruamel.yaml (comments preserved)")
+
+    except ImportError:
+        # ── Fallback: plain PyYAML (comments will be lost) ────────────────────
+        import yaml
+        log.warning(
+            "ruamel.yaml not installed — comments in rules_config.yaml will be "
+            "stripped on save. Run: pip install ruamel.yaml"
+        )
+
+        current = {}
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "r") as f:
+                    current = yaml.safe_load(f) or {}
+            except Exception as e:
+                return jsonify({"error": f"Could not read config: {e}"}), 500
+
+        deep_merge(current, data)
+
+        try:
+            with open(config_path, "w") as f:
+                yaml.dump(current, f, default_flow_style=False,
+                          allow_unicode=True, sort_keys=False)
+        except Exception as e:
+            return jsonify({"error": f"Could not write config: {e}"}), 500
+
+    except Exception as e:
+        return jsonify({"error": f"Could not write config: {e}"}), 500
+
+    # ── Hot-reload pipeline globals ───────────────────────────────────────────
+    try:
+        main_web.reload_config()
+    except Exception as e:
+        log.warning(f"Config written but reload failed: {e}")
+        return jsonify({"ok": True, "warning": f"Saved but reload failed: {e}"})
+
+    log.info("Config updated and reloaded via UI")
+    return jsonify({"ok": True})
+
+
 @app.route("/api/perf")
 def api_perf():
     log_path = os.path.join(_BASE_DIR, "src", "logs", "system.log")

@@ -82,6 +82,55 @@ DRAW_KNIFE_BBOX      = _cfg("weapon", "draw_knife_bbox", True)
 TRACKER_MAX_DISAP    = _cfg("tracker", "max_disappeared", 40)
 TRACKER_MAX_DIST     = _cfg("tracker", "max_distance", 300)
 
+
+def reload_config():
+    """
+    Re-read rules_config.yaml and hot-patch all module-level threshold globals.
+    Called by flask_app after /api/config/update writes a new YAML.
+    Thread-safe: only writes simple scalar globals — the pipeline reads them
+    on the next frame, so no lock is needed.
+    """
+    global _CFG
+    global MIN_PERSON_HEIGHT, MIN_PERSON_WIDTH, FACE_TOLERANCE
+    global CROWD_THRESHOLD
+    global FIRE_FRAME_INTERVAL, FIRE_RESULT_MAX_AGE, FIRE_MIN_CONFIDENCE
+    global FIRE_SUSTAIN_SECS, FIRE_MIN_CONSECUTIVE
+    global UNKNOWN_GRACE_SECS, IDLE_MAX_SPEED, IDLE_USE_CLIP
+    global PATROL_DISPLAY_ZONES
+    global MISSING_COOLDOWN, IDLE_COOLDOWN, IDLE_STARTUP_GRACE
+    global SIDEWAYS_RADIUS, SINGLE_PERSON_GRACE
+    global POST_CROWD_GRACE, POST_CROWD_LOITER
+    global DRAW_KNIFE_BBOX
+    global TRACKER_MAX_DISAP, TRACKER_MAX_DIST
+
+    _CFG = _load_config()
+
+    MIN_PERSON_HEIGHT    = _cfg("person",   "min_height",        60)
+    MIN_PERSON_WIDTH     = _cfg("person",   "min_width",         30)
+    FACE_TOLERANCE       = _cfg("person",   "face_tolerance",    0.5)
+    CROWD_THRESHOLD      = _cfg("crowd",    "threshold",         4)
+    FIRE_FRAME_INTERVAL  = _cfg("fire",     "frame_interval",    20)
+    FIRE_RESULT_MAX_AGE  = _cfg("fire",     "result_max_age",    8.0)
+    FIRE_MIN_CONFIDENCE  = _cfg("fire",     "min_confidence",    0.70)
+    FIRE_SUSTAIN_SECS    = _cfg("fire",     "sustain_seconds",   6.0)
+    FIRE_MIN_CONSECUTIVE = _cfg("fire",     "min_consecutive",   3)
+    UNKNOWN_GRACE_SECS   = _cfg("unknown",  "grace_seconds",     12)
+    IDLE_MAX_SPEED       = _cfg("behavior", "idle_max_speed",    12.0)
+    IDLE_USE_CLIP        = _cfg("behavior", "idle_use_clip",     False)
+    PATROL_DISPLAY_ZONES = _cfg("patrol",   "display_zones",     3)
+    MISSING_COOLDOWN     = _cfg("alerts",   "missing_cooldown",  30)
+    IDLE_COOLDOWN        = _cfg("alerts",   "idle_cooldown",     60)
+    IDLE_STARTUP_GRACE   = _cfg("alerts",   "idle_startup_grace",90)
+    SIDEWAYS_RADIUS      = _cfg("unknown",  "sideways_radius",   200)
+    SINGLE_PERSON_GRACE  = _cfg("unknown",  "single_person_grace",15.0)
+    POST_CROWD_GRACE     = _cfg("crowd",    "post_crowd_grace",  10.0)
+    POST_CROWD_LOITER    = _cfg("crowd",    "post_crowd_loiter", 15.0)
+    DRAW_KNIFE_BBOX      = _cfg("weapon",   "draw_knife_bbox",   True)
+    TRACKER_MAX_DISAP    = _cfg("tracker",  "max_disappeared",   40)
+    TRACKER_MAX_DIST     = _cfg("tracker",  "max_distance",      300)
+
+    log.info("Config reloaded — thresholds updated live.")
+
 _stop_event     = threading.Event()
 _thread_lock    = threading.Lock()
 _current_thread = None

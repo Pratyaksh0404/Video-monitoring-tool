@@ -993,6 +993,254 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
+
+  /* ═══════════════════════════════════════════════════════════
+     SETTINGS TAB
+  ══════════════════════════════════════════════════════════ */
+
+  .settings-panel {
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 16px 20px 28px;
+    background: var(--bg);
+    scrollbar-width: thin;
+    scrollbar-color: var(--border2) transparent;
+  }
+  .settings-panel::-webkit-scrollbar { width: 4px; }
+  .settings-panel::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+
+  .cfg-topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 18px;
+  }
+  .cfg-title {
+    font-family: var(--mono);
+    font-size: 9px;
+    letter-spacing: 0.18em;
+    color: var(--muted);
+    text-transform: uppercase;
+  }
+  .cfg-actions { display: flex; align-items: center; gap: 10px; }
+
+  .cfg-save-btn {
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 6px 18px;
+    border-radius: 3px;
+    border: 1px solid var(--ok);
+    background: transparent;
+    color: var(--ok);
+    cursor: pointer;
+    transition: background 0.15s;
+    letter-spacing: 0.04em;
+  }
+  .cfg-save-btn:hover { background: rgba(34,197,94,0.1); }
+  .cfg-save-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .cfg-reset-btn {
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 6px 14px;
+    border-radius: 3px;
+    border: 1px solid var(--border2);
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .cfg-reset-btn:hover { border-color: var(--text); color: var(--text); }
+
+  .cfg-dirty-badge {
+    display: none;
+    font-family: var(--mono);
+    font-size: 9px;
+    padding: 2px 8px;
+    border-radius: 2px;
+    background: rgba(245,158,11,0.15);
+    border: 1px solid var(--warn);
+    color: var(--warn);
+    letter-spacing: 0.06em;
+  }
+  .cfg-dirty-badge.visible { display: inline-block; }
+
+  .cfg-section {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    margin-bottom: 12px;
+    overflow: hidden;
+  }
+
+  .cfg-section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 11px 16px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.12s;
+  }
+  .cfg-section-header:hover { background: rgba(255,255,255,0.02); }
+
+  .cfg-section-title {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text);
+  }
+
+  .cfg-section-chevron {
+    font-size: 10px;
+    color: var(--muted);
+    transition: transform 0.2s;
+  }
+  .cfg-section.collapsed .cfg-section-chevron { transform: rotate(-90deg); }
+  .cfg-section.collapsed .cfg-section-body { display: none; }
+
+  .cfg-section-body { padding: 14px 16px 16px; }
+
+  .cfg-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 14px 20px;
+  }
+
+  .cfg-control { display: flex; flex-direction: column; gap: 5px; }
+
+  .cfg-label {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+    letter-spacing: 0.04em;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .cfg-label-val {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--accent);
+    margin-left: auto;
+  }
+
+  .cfg-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--border2);
+    outline: none;
+    cursor: pointer;
+  }
+  .cfg-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+    box-shadow: 0 0 0 2px rgba(59,130,246,0.2);
+    transition: box-shadow 0.15s;
+  }
+  .cfg-slider::-webkit-slider-thumb:hover { box-shadow: 0 0 0 4px rgba(59,130,246,0.25); }
+  .cfg-slider::-moz-range-thumb {
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: none;
+    cursor: pointer;
+  }
+
+  .cfg-number {
+    font-family: var(--mono);
+    font-size: 12px;
+    width: 100%;
+    padding: 5px 10px;
+    background: var(--panel);
+    border: 1px solid var(--border2);
+    border-radius: 3px;
+    color: var(--text);
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  .cfg-number:focus { border-color: var(--accent); }
+  .cfg-number::-webkit-inner-spin-button,
+  .cfg-number::-webkit-outer-spin-button { opacity: 0.5; }
+
+  .cfg-toggle-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .cfg-toggle-row:last-child { border-bottom: none; }
+
+  .cfg-toggle-label {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text);
+    letter-spacing: 0.02em;
+  }
+  .cfg-toggle-sub {
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--muted);
+    margin-top: 1px;
+  }
+
+  .cfg-switch {
+    position: relative;
+    display: inline-block;
+    width: 36px;
+    height: 20px;
+    flex-shrink: 0;
+  }
+  .cfg-switch input { display: none; }
+  .cfg-switch-slider {
+    position: absolute;
+    inset: 0;
+    background: var(--border2);
+    border-radius: 10px;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+  .cfg-switch-slider::before {
+    content: "";
+    position: absolute;
+    width: 14px; height: 14px;
+    left: 3px; top: 3px;
+    background: var(--muted);
+    border-radius: 50%;
+    transition: transform 0.2s, background 0.2s;
+  }
+  .cfg-switch input:checked + .cfg-switch-slider { background: rgba(34,197,94,0.25); }
+  .cfg-switch input:checked + .cfg-switch-slider::before {
+    transform: translateX(16px);
+    background: var(--ok);
+  }
+
+  .cfg-hint {
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--border2);
+    margin-top: 1px;
+  }
+
+  .cfg-status {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+    min-width: 160px;
+    text-align: right;
+  }
+  .cfg-status.ok     { color: var(--ok); }
+  .cfg-status.danger { color: var(--danger); }
 </style>
 </head>
 <body>
@@ -1014,7 +1262,9 @@
               onclick="switchTab('analytics', this)">Analytics</button>
       <button class="tab-btn" id="tab-btn-system"
               onclick="switchTab('system', this)">System Log</button>
-    </nav>
+      <button class="tab-btn" id="tab-btn-settings"
+              onclick="switchTab('settings', this)">⚙ Settings</button>
+
 
     <!-- Model status pills -->
     <div class="model-pills" id="model-pills">
@@ -1418,6 +1668,329 @@
     <div id="sl-perf-row" style="display:flex;gap:12px;margin-top:12px;flex-wrap:wrap;"></div>
 
   </div><!-- /view-system -->
+
+  <!-- ═══════════════════════════════════════════════════════
+       SETTINGS TAB (hidden by default)
+  ═══════════════════════════════════════════════════════ -->
+  <div class="settings-panel" id="view-settings" style="display:none">
+
+    <!-- Top bar: title + save controls -->
+    <div class="cfg-topbar">
+      <span class="cfg-title">Alert Rule Configuration</span>
+      <div class="cfg-actions">
+        <span class="cfg-dirty-badge" id="cfg-dirty">● unsaved changes</span>
+        <span class="cfg-status" id="cfg-status"></span>
+        <button class="cfg-reset-btn" onclick="cfgReload()">↺ Reload</button>
+        <button class="cfg-save-btn" id="cfg-save-btn" onclick="cfgSave()">Save &amp; Apply</button>
+      </div>
+    </div>
+
+    <!-- ── SECTION: Behavior (CLIP) thresholds ────────────────────── -->
+    <div class="cfg-section" id="cfg-sec-behavior">
+      <div class="cfg-section-header" onclick="cfgToggleSection('cfg-sec-behavior')">
+        <span class="cfg-section-title">Behavior Detection (CLIP)</span>
+        <span class="cfg-section-chevron">▾</span>
+      </div>
+      <div class="cfg-section-body">
+        <p style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:14px;">
+          CLIP confidence threshold — minimum score before a label is considered.
+          Confirm ratio — fraction of recent readings that must agree before an alert fires.
+        </p>
+        <div class="cfg-grid">
+
+          <div class="cfg-control">
+            <label class="cfg-label">
+              Sleeping — CLIP threshold
+              <span class="cfg-label-val" id="val-sleep-thresh">0.75</span>
+            </label>
+            <input type="range" class="cfg-slider" id="sl-sleep-thresh"
+                   min="0.40" max="0.95" step="0.01" value="0.75"
+                   oninput="cfgSliderInput('sl-sleep-thresh','val-sleep-thresh')">
+            <span class="cfg-hint">Higher = fewer false positives (default 0.75)</span>
+          </div>
+
+          <div class="cfg-control">
+            <label class="cfg-label">
+              Sleeping — confirm ratio
+              <span class="cfg-label-val" id="val-sleep-confirm">0.95</span>
+            </label>
+            <input type="range" class="cfg-slider" id="sl-sleep-confirm"
+                   min="0.50" max="1.00" step="0.01" value="0.95"
+                   oninput="cfgSliderInput('sl-sleep-confirm','val-sleep-confirm')">
+            <span class="cfg-hint">Very strict — 9 of 10 readings must agree (default 0.95)</span>
+          </div>
+
+          <div class="cfg-control">
+            <label class="cfg-label">
+              Phone Use — CLIP threshold
+              <span class="cfg-label-val" id="val-phone-thresh">0.50</span>
+            </label>
+            <input type="range" class="cfg-slider" id="sl-phone-thresh"
+                   min="0.25" max="0.90" step="0.01" value="0.50"
+                   oninput="cfgSliderInput('sl-phone-thresh','val-phone-thresh')">
+          </div>
+
+          <div class="cfg-control">
+            <label class="cfg-label">
+              Phone Use — confirm ratio
+              <span class="cfg-label-val" id="val-phone-confirm">0.60</span>
+            </label>
+            <input type="range" class="cfg-slider" id="sl-phone-confirm"
+                   min="0.30" max="1.00" step="0.01" value="0.60"
+                   oninput="cfgSliderInput('sl-phone-confirm','val-phone-confirm')">
+          </div>
+
+          <div class="cfg-control">
+            <label class="cfg-label">
+              Smoking — CLIP threshold
+              <span class="cfg-label-val" id="val-smoke-thresh">0.70</span>
+            </label>
+            <input type="range" class="cfg-slider" id="sl-smoke-thresh"
+                   min="0.30" max="0.95" step="0.01" value="0.70"
+                   oninput="cfgSliderInput('sl-smoke-thresh','val-smoke-thresh')">
+          </div>
+
+          <div class="cfg-control">
+            <label class="cfg-label">
+              Smoking — confirm ratio
+              <span class="cfg-label-val" id="val-smoke-confirm">0.85</span>
+            </label>
+            <input type="range" class="cfg-slider" id="sl-smoke-confirm"
+                   min="0.30" max="1.00" step="0.01" value="0.85"
+                   oninput="cfgSliderInput('sl-smoke-confirm','val-smoke-confirm')">
+          </div>
+
+          <div class="cfg-control">
+            <label class="cfg-label">
+              Idle — CLIP threshold
+              <span class="cfg-label-val" id="val-idle-thresh">0.50</span>
+            </label>
+            <input type="range" class="cfg-slider" id="sl-idle-thresh"
+                   min="0.20" max="0.90" step="0.01" value="0.50"
+                   oninput="cfgSliderInput('sl-idle-thresh','val-idle-thresh')">
+          </div>
+
+          <div class="cfg-control">
+            <label class="cfg-label">
+              Behavior check interval (frames)
+              <span class="cfg-label-val" id="val-beh-interval">50</span>
+            </label>
+            <input type="range" class="cfg-slider" id="sl-beh-interval"
+                   min="10" max="200" step="5" value="50"
+                   oninput="cfgSliderInput('sl-beh-interval','val-beh-interval')">
+            <span class="cfg-hint">Higher = less frequent CLIP calls, lower CPU</span>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <!-- ── SECTION: Alert Cooldowns ─────────────────────────────────── -->
+    <div class="cfg-section" id="cfg-sec-alerts">
+      <div class="cfg-section-header" onclick="cfgToggleSection('cfg-sec-alerts')">
+        <span class="cfg-section-title">Alert Cooldowns</span>
+        <span class="cfg-section-chevron">▾</span>
+      </div>
+      <div class="cfg-section-body">
+        <p style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:14px;">
+          Minimum seconds between repeated alerts of the same type. Prevents spam.
+        </p>
+        <div class="cfg-grid">
+
+          <div class="cfg-control">
+            <label class="cfg-label">General alert cooldown (s)</label>
+            <input type="number" class="cfg-number" id="num-alert-cooldown"
+                   min="5" max="600" value="30">
+            <span class="cfg-hint">Applies to most per-person alerts</span>
+          </div>
+
+          <div class="cfg-control">
+            <label class="cfg-label">Guard missing cooldown (s)</label>
+            <input type="number" class="cfg-number" id="num-missing-cooldown"
+                   min="5" max="600" value="30">
+          </div>
+
+          <div class="cfg-control">
+            <label class="cfg-label">Guard idle cooldown (s)</label>
+            <input type="number" class="cfg-number" id="num-idle-cooldown"
+                   min="10" max="600" value="60">
+          </div>
+
+          <div class="cfg-control">
+            <label class="cfg-label">Idle startup grace (s)</label>
+            <input type="number" class="cfg-number" id="num-idle-grace"
+                   min="0" max="300" value="90">
+            <span class="cfg-hint">Idle alerts suppressed for this long after startup</span>
+          </div>
+
+          <div class="cfg-control">
+            <label class="cfg-label">Email alert cooldown (s)</label>
+            <input type="number" class="cfg-number" id="num-email-cooldown"
+                   min="30" max="3600" value="200">
+            <span class="cfg-hint">Per-alert-type email rate limit</span>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <!-- ── SECTION: Detection Thresholds ────────────────────────────── -->
+    <div class="cfg-section" id="cfg-sec-detection">
+      <div class="cfg-section-header" onclick="cfgToggleSection('cfg-sec-detection')">
+        <span class="cfg-section-title">Detection Thresholds</span>
+        <span class="cfg-section-chevron">▾</span>
+      </div>
+      <div class="cfg-section-body">
+        <div class="cfg-grid">
+
+          <div class="cfg-control">
+            <label class="cfg-label">
+              Weapon confidence
+              <span class="cfg-label-val" id="val-weapon-conf">0.75</span>
+            </label>
+            <input type="range" class="cfg-slider" id="sl-weapon-conf"
+                   min="0.30" max="0.99" step="0.01" value="0.75"
+                   oninput="cfgSliderInput('sl-weapon-conf','val-weapon-conf')">
+          </div>
+
+          <div class="cfg-control">
+            <label class="cfg-label">
+              Fire min confidence
+              <span class="cfg-label-val" id="val-fire-conf">0.55</span>
+            </label>
+            <input type="range" class="cfg-slider" id="sl-fire-conf"
+                   min="0.20" max="0.99" step="0.01" value="0.55"
+                   oninput="cfgSliderInput('sl-fire-conf','val-fire-conf')">
+          </div>
+
+          <div class="cfg-control">
+            <label class="cfg-label">Fire sustain seconds</label>
+            <input type="number" class="cfg-number" id="num-fire-sustain"
+                   min="1" max="30" value="6">
+            <span class="cfg-hint">Fire must persist this long before alerting</span>
+          </div>
+
+          <div class="cfg-control">
+            <label class="cfg-label">Fire min consecutive detections</label>
+            <input type="number" class="cfg-number" id="num-fire-consecutive"
+                   min="1" max="20" value="3">
+          </div>
+
+          <div class="cfg-control">
+            <label class="cfg-label">Crowd threshold (people)</label>
+            <input type="number" class="cfg-number" id="num-crowd-threshold"
+                   min="2" max="20" value="4">
+            <span class="cfg-hint">Frame person count that triggers crowd alert</span>
+          </div>
+
+          <div class="cfg-control">
+            <label class="cfg-label">Face recognition tolerance</label>
+            <input type="number" class="cfg-number" id="num-face-tolerance"
+                   min="0.2" max="0.8" step="0.05" value="0.5">
+            <span class="cfg-hint">Lower = stricter match (default 0.5)</span>
+          </div>
+
+          <div class="cfg-control">
+            <label class="cfg-label">Unknown person grace (s)</label>
+            <input type="number" class="cfg-number" id="num-unknown-grace"
+                   min="1" max="120" value="12">
+            <span class="cfg-hint">Delay before unknown person alert fires</span>
+          </div>
+
+          <div class="cfg-control">
+            <label class="cfg-label">
+              Idle max speed (px/s)
+              <span class="cfg-label-val" id="val-idle-speed">12</span>
+            </label>
+            <input type="range" class="cfg-slider" id="sl-idle-speed"
+                   min="2" max="60" step="1" value="12"
+                   oninput="cfgSliderInput('sl-idle-speed','val-idle-speed')">
+            <span class="cfg-hint">Movement below this is considered idle</span>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <!-- ── SECTION: Alert Type Enable / Disable ─────────────────────── -->
+    <div class="cfg-section" id="cfg-sec-toggles">
+      <div class="cfg-section-header" onclick="cfgToggleSection('cfg-sec-toggles')">
+        <span class="cfg-section-title">Alert Type Toggles</span>
+        <span class="cfg-section-chevron">▾</span>
+      </div>
+      <div class="cfg-section-body">
+        <p style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:10px;">
+          Enable or disable email and WhatsApp delivery per alert type.
+          Detection still runs — only the notification channel is gated.
+        </p>
+
+        <div style="font-family:var(--mono);font-size:9px;color:var(--muted);
+                    letter-spacing:0.1em;text-transform:uppercase;
+                    margin-bottom:8px;">Email Alerts</div>
+
+        <div id="cfg-email-toggles">
+          <!-- Populated by JS from /api/config -->
+        </div>
+
+        <div style="font-family:var(--mono);font-size:9px;color:var(--muted);
+                    letter-spacing:0.1em;text-transform:uppercase;
+                    margin:14px 0 8px;">WhatsApp Alerts</div>
+
+        <div id="cfg-wa-toggles">
+          <!-- Populated by JS from /api/config -->
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ── SECTION: Loitering & Tracker ─────────────────────────────── -->
+    <div class="cfg-section collapsed" id="cfg-sec-advanced">
+      <div class="cfg-section-header" onclick="cfgToggleSection('cfg-sec-advanced')">
+        <span class="cfg-section-title">Advanced — Loitering &amp; Tracker</span>
+        <span class="cfg-section-chevron">▾</span>
+      </div>
+      <div class="cfg-section-body">
+        <div class="cfg-grid">
+
+          <div class="cfg-control">
+            <label class="cfg-label">Unknown person loiter time (s)</label>
+            <input type="number" class="cfg-number" id="num-loiter-unknown"
+                   min="5" max="300" value="30">
+          </div>
+
+          <div class="cfg-control">
+            <label class="cfg-label">Known person loiter time (s)</label>
+            <input type="number" class="cfg-number" id="num-loiter-known"
+                   min="10" max="600" value="90">
+          </div>
+
+          <div class="cfg-control">
+            <label class="cfg-label">Tracker max disappeared (frames)</label>
+            <input type="number" class="cfg-number" id="num-tracker-disap"
+                   min="5" max="200" value="40">
+            <span class="cfg-hint">Frames before a lost track is dropped</span>
+          </div>
+
+          <div class="cfg-control">
+            <label class="cfg-label">Tracker max distance (px)</label>
+            <input type="number" class="cfg-number" id="num-tracker-dist"
+                   min="50" max="800" value="300">
+            <span class="cfg-hint">Max centroid jump between frames</span>
+          </div>
+
+          <div class="cfg-control">
+            <label class="cfg-label">Post-crowd grace period (s)</label>
+            <input type="number" class="cfg-number" id="num-crowd-grace"
+                   min="0" max="60" value="10">
+            <span class="cfg-hint">Unknown-person alerts suppressed after crowd disperses</span>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /view-settings -->
+
 
 </div><!-- /shell -->
 
@@ -1906,10 +2479,12 @@ function switchTab(tab, btn) {
   const isMonitor   = tab === 'monitor';
   const isAnalytics = tab === 'analytics';
   const isSystem    = tab === 'system';
+  const isSettings  = tab === 'settings';
 
   document.getElementById('view-monitor').style.display   = isMonitor   ? '' : 'none';
   document.getElementById('view-analytics').style.display = isAnalytics ? '' : 'none';
   document.getElementById('view-system').style.display    = isSystem    ? '' : 'none';
+  document.getElementById('view-settings').style.display  = isSettings  ? '' : 'none';
 
   document.documentElement.style.overflow = isMonitor ? 'hidden' : 'auto';
   document.body.style.overflow            = isMonitor ? 'hidden' : 'auto';
@@ -1922,6 +2497,10 @@ function switchTab(tab, btn) {
   } else {
     clearInterval(analyticsTimer);
     analyticsTimer = null;
+  }
+
+  if (isSettings) {
+    cfgLoad();
   }
 }
 
@@ -2401,5 +2980,295 @@ document.addEventListener('visibilitychange', () => {
 
 // Also reset on window focus
 window.addEventListener('focus', _resetTabAlerts);
+
+
+
+// ══════════════════════════════════════════════════════════
+//  SETTINGS TAB
+// ══════════════════════════════════════════════════════════
+
+let _cfgOriginal  = null;  // snapshot when tab opened — for dirty detection
+let _cfgDirty     = false;
+
+// ── Collapse / expand sections ────────────────────────────
+function cfgToggleSection(id) {
+  const sec = document.getElementById(id);
+  if (sec) sec.classList.toggle('collapsed');
+}
+
+// ── Slider helper: update displayed value label ───────────
+function cfgSliderInput(sliderId, valId) {
+  const v = document.getElementById(sliderId).value;
+  document.getElementById(valId).textContent = v;
+  cfgMarkDirty();
+}
+
+// ── Dirty state ────────────────────────────────────────────
+function cfgMarkDirty() {
+  _cfgDirty = true;
+  const badge = document.getElementById('cfg-dirty');
+  if (badge) badge.classList.add('visible');
+}
+
+function cfgClearDirty() {
+  _cfgDirty = false;
+  const badge = document.getElementById('cfg-dirty');
+  if (badge) badge.classList.remove('visible');
+}
+
+// ── Load config from server and populate controls ─────────
+function cfgLoad() {
+  const status = document.getElementById('cfg-status');
+  if (status) { status.textContent = 'Loading…'; status.className = 'cfg-status'; }
+
+  fetch('/api/config')
+    .then(r => r.json())
+    .then(cfg => {
+      _cfgOriginal = JSON.parse(JSON.stringify(cfg));
+      cfgPopulate(cfg);
+      cfgClearDirty();
+      if (status) { status.textContent = 'Loaded'; status.className = 'cfg-status ok'; }
+      setTimeout(() => { if (status) status.textContent = ''; }, 2000);
+    })
+    .catch(err => {
+      console.warn('[settings] config load failed:', err);
+      if (status) { status.textContent = 'Load failed'; status.className = 'cfg-status danger'; }
+    });
+}
+
+function cfgReload() {
+  cfgLoad();
+}
+
+// ── Populate all controls from config object ──────────────
+function cfgPopulate(cfg) {
+  const beh = cfg.behavior || {};
+  const thr = beh.clip_thresholds || {};
+  const con = beh.confirm_ratios  || {};
+  const alr = cfg.alerts          || {};
+  const wep = cfg.weapon          || {};
+  const fir = cfg.fire            || {};
+  const crd = cfg.crowd           || {};
+  const fce = cfg.person          || {};
+  const unk = cfg.unknown         || {};
+  const loi = cfg.loitering       || {};
+  const trk = cfg.tracker         || {};
+  const eml = cfg.email           || {};
+
+  // Behavior sliders
+  cfgSetSlider('sl-sleep-thresh',   'val-sleep-thresh',   thr.SLEEPING       ?? 0.75);
+  cfgSetSlider('sl-sleep-confirm',  'val-sleep-confirm',  con.SLEEPING       ?? 0.95);
+  cfgSetSlider('sl-phone-thresh',   'val-phone-thresh',   thr.PHONE_USE      ?? 0.50);
+  cfgSetSlider('sl-phone-confirm',  'val-phone-confirm',  con.PHONE_USE      ?? 0.60);
+  cfgSetSlider('sl-smoke-thresh',   'val-smoke-thresh',   thr.SMOKING        ?? 0.70);
+  cfgSetSlider('sl-smoke-confirm',  'val-smoke-confirm',  con.SMOKING        ?? 0.85);
+  cfgSetSlider('sl-idle-thresh',    'val-idle-thresh',    thr.IDLE           ?? 0.50);
+  cfgSetSlider('sl-beh-interval',   'val-beh-interval',   beh.interval_frames ?? 50);
+  cfgSetSlider('sl-idle-speed',     'val-idle-speed',     beh.idle_max_speed  ?? 12);
+
+  // Cooldown number inputs
+  cfgSetNumber('num-alert-cooldown',  alr.cooldown         ?? 30);
+  cfgSetNumber('num-missing-cooldown',alr.missing_cooldown  ?? 30);
+  cfgSetNumber('num-idle-cooldown',   alr.idle_cooldown     ?? 60);
+  cfgSetNumber('num-idle-grace',      alr.idle_startup_grace ?? 90);
+  cfgSetNumber('num-email-cooldown',  eml.cooldown         ?? 200);
+
+  // Detection thresholds
+  cfgSetSlider('sl-weapon-conf', 'val-weapon-conf', wep.confidence   ?? 0.75);
+  cfgSetSlider('sl-fire-conf',   'val-fire-conf',   fir.min_confidence ?? 0.55);
+  cfgSetNumber('num-fire-sustain',     fir.sustain_seconds   ?? 6);
+  cfgSetNumber('num-fire-consecutive', fir.min_consecutive   ?? 3);
+  cfgSetNumber('num-crowd-threshold',  crd.threshold         ?? 4);
+  cfgSetNumber('num-face-tolerance',   fce.face_tolerance    ?? 0.5);
+  cfgSetNumber('num-unknown-grace',    unk.grace_seconds     ?? 12);
+
+  // Advanced
+  cfgSetNumber('num-loiter-unknown', loi.unknown_zone_time ?? 30);
+  cfgSetNumber('num-loiter-known',   loi.known_zone_time   ?? 90);
+  cfgSetNumber('num-tracker-disap',  trk.max_disappeared   ?? 40);
+  cfgSetNumber('num-tracker-dist',   trk.max_distance      ?? 300);
+  cfgSetNumber('num-crowd-grace',    crd.post_crowd_grace  ?? 10);
+
+  // Alert type toggles
+  const allAlertTypes = [
+    'Weapon Detected', 'Unattended Weapon Detected', 'Fire Detected',
+    'Fight / Violence Detected', 'Guard Under Attack',
+    'Guard Sleeping', 'Guard Missing', 'Guard Smoking',
+    'Camera Tamper', 'Phone Usage', 'Crowd Detected',
+  ];
+
+  const emailTypes = eml.alert_types || [];
+  cfgBuildToggles('cfg-email-toggles', allAlertTypes, emailTypes, 'email');
+
+  const wa       = cfg.whatsapp || {};
+  const waTypes  = wa.alert_types || [];
+  cfgBuildToggles('cfg-wa-toggles', allAlertTypes, waTypes, 'wa');
+
+  // Add change listeners to all inputs/sliders (for dirty tracking)
+  document.querySelectorAll('#view-settings input').forEach(el => {
+    el.addEventListener('change', cfgMarkDirty);
+  });
+}
+
+// ── Toggle list builder ────────────────────────────────────
+function cfgBuildToggles(containerId, allTypes, enabledTypes, prefix) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  container.innerHTML = allTypes.map(type => {
+    const id      = prefix + '-toggle-' + type.replace(/[^a-zA-Z0-9]/g, '_');
+    const checked = enabledTypes.some(t => t.toLowerCase() === type.toLowerCase());
+    return `
+      <div class="cfg-toggle-row">
+        <div>
+          <div class="cfg-toggle-label">${escHtml(type)}</div>
+        </div>
+        <label class="cfg-switch">
+          <input type="checkbox" id="${id}" ${checked ? 'checked' : ''}
+                 onchange="cfgMarkDirty()">
+          <span class="cfg-switch-slider"></span>
+        </label>
+      </div>`;
+  }).join('');
+}
+
+// ── Helpers ────────────────────────────────────────────────
+function cfgSetSlider(sliderId, valId, value) {
+  const el = document.getElementById(sliderId);
+  const vl = document.getElementById(valId);
+  if (el) el.value = value;
+  if (vl) vl.textContent = value;
+}
+
+function cfgSetNumber(inputId, value) {
+  const el = document.getElementById(inputId);
+  if (el) el.value = value;
+}
+
+function cfgGetNumber(inputId, fallback) {
+  const el = document.getElementById(inputId);
+  if (!el) return fallback;
+  const v = parseFloat(el.value);
+  return isNaN(v) ? fallback : v;
+}
+
+function cfgGetSlider(sliderId, fallback) {
+  const el = document.getElementById(sliderId);
+  if (!el) return fallback;
+  const v = parseFloat(el.value);
+  return isNaN(v) ? fallback : v;
+}
+
+function cfgGetToggledTypes(prefix, allTypes) {
+  return allTypes.filter(type => {
+    const id = prefix + '-toggle-' + type.replace(/[^a-zA-Z0-9]/g, '_');
+    const el = document.getElementById(id);
+    return el && el.checked;
+  });
+}
+
+// ── Build payload from current UI state ────────────────────
+function cfgBuildPayload() {
+  const allAlertTypes = [
+    'Weapon Detected', 'Unattended Weapon Detected', 'Fire Detected',
+    'Fight / Violence Detected', 'Guard Under Attack',
+    'Guard Sleeping', 'Guard Missing', 'Guard Smoking',
+    'Camera Tamper', 'Phone Usage', 'Crowd Detected',
+  ];
+
+  return {
+    behavior: {
+      interval_frames: cfgGetSlider('sl-beh-interval', 50),
+      idle_max_speed:  cfgGetSlider('sl-idle-speed', 12),
+      clip_thresholds: {
+        SLEEPING:  cfgGetSlider('sl-sleep-thresh', 0.75),
+        PHONE_USE: cfgGetSlider('sl-phone-thresh', 0.50),
+        SMOKING:   cfgGetSlider('sl-smoke-thresh', 0.70),
+        IDLE:      cfgGetSlider('sl-idle-thresh', 0.50),
+      },
+      confirm_ratios: {
+        SLEEPING:  cfgGetSlider('sl-sleep-confirm', 0.95),
+        PHONE_USE: cfgGetSlider('sl-phone-confirm', 0.60),
+        SMOKING:   cfgGetSlider('sl-smoke-confirm', 0.85),
+      },
+    },
+    alerts: {
+      cooldown:          cfgGetNumber('num-alert-cooldown', 30),
+      missing_cooldown:  cfgGetNumber('num-missing-cooldown', 30),
+      idle_cooldown:     cfgGetNumber('num-idle-cooldown', 60),
+      idle_startup_grace: cfgGetNumber('num-idle-grace', 90),
+    },
+    weapon: {
+      confidence: cfgGetSlider('sl-weapon-conf', 0.75),
+    },
+    fire: {
+      min_confidence:  cfgGetSlider('sl-fire-conf', 0.55),
+      sustain_seconds: cfgGetNumber('num-fire-sustain', 6),
+      min_consecutive: cfgGetNumber('num-fire-consecutive', 3),
+    },
+    crowd: {
+      threshold:       cfgGetNumber('num-crowd-threshold', 4),
+      post_crowd_grace: cfgGetNumber('num-crowd-grace', 10),
+    },
+    person: {
+      face_tolerance: cfgGetNumber('num-face-tolerance', 0.5),
+    },
+    unknown: {
+      grace_seconds: cfgGetNumber('num-unknown-grace', 12),
+    },
+    loitering: {
+      unknown_zone_time: cfgGetNumber('num-loiter-unknown', 30),
+      known_zone_time:   cfgGetNumber('num-loiter-known', 90),
+    },
+    tracker: {
+      max_disappeared: cfgGetNumber('num-tracker-disap', 40),
+      max_distance:    cfgGetNumber('num-tracker-dist', 300),
+    },
+    email: {
+      cooldown:    cfgGetNumber('num-email-cooldown', 200),
+      alert_types: cfgGetToggledTypes('email', allAlertTypes),
+    },
+    whatsapp: {
+      alert_types: cfgGetToggledTypes('wa', allAlertTypes),
+    },
+  };
+}
+
+// ── Save ───────────────────────────────────────────────────
+function cfgSave() {
+  const btn    = document.getElementById('cfg-save-btn');
+  const status = document.getElementById('cfg-status');
+
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Saving…'; }
+  if (status) { status.textContent = 'Saving…'; status.className = 'cfg-status'; }
+
+  const payload = cfgBuildPayload();
+
+  fetch('/api/config/update', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      cfgClearDirty();
+      if (status) { status.textContent = '✓ Saved & applied'; status.className = 'cfg-status ok'; }
+      showToast('Settings saved — thresholds updated live', false);
+      setTimeout(() => { if (status) status.textContent = ''; }, 3000);
+    } else {
+      const msg = d.error || d.warning || 'Unknown error';
+      if (status) { status.textContent = 'Error: ' + msg; status.className = 'cfg-status danger'; }
+      showToast('Save failed: ' + msg, true);
+    }
+  })
+  .catch(err => {
+    if (status) { status.textContent = 'Network error'; status.className = 'cfg-status danger'; }
+    showToast('Save failed — network error', true);
+    console.error('[settings] save error:', err);
+  })
+  .finally(() => {
+    if (btn) { btn.disabled = false; btn.textContent = 'Save & Apply'; }
+  });
+}
 
 </script>
