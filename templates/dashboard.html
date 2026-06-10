@@ -849,7 +849,6 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    margin-left: auto;
     margin-right: 12px;
   }
   .model-pill {
@@ -1264,33 +1263,32 @@
               onclick="switchTab('system', this)">System Log</button>
       <button class="tab-btn" id="tab-btn-settings"
               onclick="switchTab('settings', this)">⚙ Settings</button>
+    </nav>
 
-
-    <!-- Model status pills -->
-    <div class="model-pills" id="model-pills">
-      <div class="model-pill" id="pill-yolo">
-        <div class="dot" id="pill-yolo-dot"></div>
-        <span>YOLO</span>
-      </div>
-      <div class="model-pill" id="pill-face">
-        <div class="dot" id="pill-face-dot"></div>
-        <span>FACE</span>
-      </div>
-      <div class="model-pill" id="pill-clip">
-        <div class="dot" id="pill-clip-dot"></div>
-        <span>CLIP</span>
-      </div>
-      <div class="model-pill" id="pill-fire">
-        <div class="dot" id="pill-fire-dot"></div>
-        <span>FIRE</span>
-      </div>
-    </div>
-
-    <div class="cam-label" id="cam-label">Camera 0</div>
-    <select class="cam-select" id="cam-select" style="display:none;"
-            onchange="switchCamera(this.value)">
-    </select>
+    <!-- Right side: model pills + camera label + live badge -->
     <div class="topbar-right">
+      <div class="model-pills" id="model-pills">
+        <div class="model-pill" id="pill-yolo">
+          <div class="dot" id="pill-yolo-dot"></div>
+          <span>YOLO</span>
+        </div>
+        <div class="model-pill" id="pill-face">
+          <div class="dot" id="pill-face-dot"></div>
+          <span>FACE</span>
+        </div>
+        <div class="model-pill" id="pill-clip">
+          <div class="dot" id="pill-clip-dot"></div>
+          <span>CLIP</span>
+        </div>
+        <div class="model-pill" id="pill-fire">
+          <div class="dot" id="pill-fire-dot"></div>
+          <span>FIRE</span>
+        </div>
+      </div>
+      <div class="cam-label" id="cam-label">Camera 0</div>
+      <select class="cam-select" id="cam-select" style="display:none;"
+              onchange="switchCamera(this.value)">
+      </select>
       <span class="mode-badge" id="mode-badge">LIVE</span>
     </div>
   </div>
