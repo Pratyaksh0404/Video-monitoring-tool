@@ -28,7 +28,7 @@ from werkzeug.utils import secure_filename
 import main_web
 from video_streamer import streamer
 from alerts.alert_manager import alert_queue
-from utils.logger import get_logger
+from utils.logger import get_logger, save_session_log
 from snapshot_manager import snap_mgr as _snap_mgr
 
 log = get_logger("flask_app")
@@ -65,7 +65,8 @@ from shift_report import generate_report
 _email_alerter.set_snapshot_manager(_snap_mgr)
 
 # Session start time — updated each time a new session begins
-_session_start = time.time()
+_session_start    = time.time()
+
 
 app = Flask(__name__)
 app.config["UPLOAD_FOLDER"] = "uploads"
@@ -131,43 +132,74 @@ def alert_dispatcher():
                 _sse_subscribers.remove(q)
 
 
+# Guards against send_session_report being triggered concurrently
+# (e.g. source-switch + Ctrl+C arriving within milliseconds of each other)
+_session_report_lock = threading.Lock()
+
+
 def send_session_report():
     """
     Generate and deliver the shift report for the CURRENT (ending) session.
-    Captures alert_log and stats snapshot before the new session resets them.
-    Called when source switches — that's the session boundary.
+    Captures and CLEARS the alert log atomically, then closes the session log
+    and opens a fresh one.
+
+    Only runs for real sessions (>=3 alerts). Short/empty switches are ignored
+    so no ghost log files are created.
+
+    Re-entrant calls are dropped via _session_report_lock — the first caller
+    owns the session boundary; any concurrent duplicate call returns immediately.
     """
     global _session_start
 
+    # Drop duplicate concurrent calls (source-switch + atexit race)
+    if not _session_report_lock.acquire(blocking=False):
+        log.info("Session report already in progress — skipping duplicate call.")
+        return
+
     try:
-        # Capture session data NOW before new session resets anything
+        # Capture AND clear the alert log atomically so a second call that
+        # somehow slips through always sees an empty list.
         with _alert_log_lock:
             alerts = list(_alert_log)
+            _alert_log.clear()
 
-        # Capture stats snapshot
-        session_stats = dict(streamer.stats)
-        session_start = _session_start
-
-        # Skip near-empty sessions (e.g. immediate switch after startup)
+        # Skip if there's nothing new to report (e.g. Ctrl+C fired shortly
+        # after a manual "Send Report" from the dashboard already cleared the
+        # alert log, or a source-switch happened with very few events).
         if len(alerts) < 3:
-            log.info("Session too short — skipping report delivery.")
+            log.info("Session too short (fewer than 3 alerts) — skipping report delivery.")
             return
 
-        html = generate_report(
-            alert_log=alerts,
-            stats=session_stats,
-            session_start=session_start,
-        )
+        # ── Send the shift report ─────────────────────────────────────────
+        # NOTE: we do NOT archive / rotate the log file here.
+        # system.log runs continuously for the entire program run.
+        # Archiving to sessions/session_YYYY-MM-DD_HH-MM-SS.log happens
+        # only once — in _sigint_handler / _on_exit_guarded on real exit.
+        # This means one source-switch = one report email, but still only
+        # one session log file per run in the sessions/ folder.
+        _session_start = time.time()   # reset timer for next segment's stats
 
-        # Email report (HTML attached)
-        _email_alerter.send_report(html, session_stats)
+        try:
+            session_stats = dict(streamer.stats)
 
-        # WhatsApp summary (text only, high+smoking incidents)
-        #_whatsapp_alerter.send_session_summary(alerts, session_stats)
+            html = generate_report(
+                alert_log=alerts,
+                stats=session_stats,
+                session_start=_session_start,
+            )
 
-        log.info("Session report sent via email")
-    except Exception as e:
-        log.error(f"Session report send failed: {e}", exc_info=True)
+            # Email report (HTML attached)
+            _email_alerter.send_report(html, session_stats)
+
+            # WhatsApp summary (text only, high+smoking incidents)
+            #_whatsapp_alerter.send_session_summary(alerts, session_stats)
+
+            log.info("Session report sent via email")
+        except Exception as e:
+            log.error(f"Session report send failed: {e}", exc_info=True)
+
+    finally:
+        _session_report_lock.release()
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -627,13 +659,13 @@ _exit_triggered = False
 
 
 def _on_exit():
-    """Auto-send session report when the program exits (Ctrl+C or normal exit)."""
+    """Auto-send session report and archive the session log on normal exit."""
     print("\n[GMS] Shutting down — sending session report...")
     try:
         send_session_report()
-        # Give email/WhatsApp threads a moment to finish
         import time as _t
-        _t.sleep(3)
+        print("[GMS] Waiting 20s for shift report email to send...")
+        _t.sleep(20)
     except Exception as e:
         print(f"[GMS] Report send on exit failed: {e}")
 
@@ -642,29 +674,63 @@ if __name__ == "__main__":
     import atexit
     import signal
 
-    # Register auto-report on normal exit
-    atexit.register(_on_exit)
+    _exit_triggered = False
 
-    # Handle Ctrl+C gracefully — send report then exit
-    _original_sigint = signal.getsignal(signal.SIGINT)
     def _sigint_handler(signum, frame):
+        """Ctrl+C — archive log, send report, wait for email, exit."""
         global _exit_triggered
         if _exit_triggered:
-            # Second Ctrl+C — force exit
+            # Second Ctrl+C — force-quit immediately
             import sys
             sys.exit(1)
         _exit_triggered = True
-        print("\n[GMS] Caught Ctrl+C — sending report before exit...")
+        print("\n[GMS] Caught Ctrl+C — saving session log and sending report...")
+
+        # ── 1. Archive the log FIRST — safe regardless of what happens next ──
+        archived = save_session_log(
+            datetime.datetime.fromtimestamp(_session_start)
+        )
+        if archived:
+            print(f"[GMS] Session log archived → {archived}")
+
+        # ── 2. Send the report ────────────────────────────────────────────────
         try:
             send_session_report()
-            import time as _t
-            _t.sleep(3)
         except Exception:
             pass
+
+        # ── 3. Wait for email daemon thread to finish ─────────────────────────
+        # EmailAlerter.send_report() fires SMTP on a daemon thread.
+        # Daemon threads are killed the instant the process exits, so we must
+        # hold the main thread open long enough for the send to complete.
+        # SMTP connect + Gmail auth + send = typically 4-10s on a good connection.
+        # We wait a flat 20s — safe margin with no false-early-exit risk.
+        import time as _t
+        print("[GMS] Waiting 20s for shift report email to send...")
+        _t.sleep(20)
+        print("[GMS] Done. Exiting.")
+
         import sys
         sys.exit(0)
 
+    def _on_exit_guarded():
+        """atexit wrapper — only runs if SIGINT didn't already handle everything."""
+        if _exit_triggered:
+            # SIGINT handler already archived the log and is waiting for email.
+            # Nothing left to do here.
+            return
+        _on_exit()
+        # Archive log after report is sent (normal exit path)
+        archived = save_session_log(
+            datetime.datetime.fromtimestamp(_session_start)
+        )
+        if archived:
+            print(f"[GMS] Session log archived → {archived}")
+
     signal.signal(signal.SIGINT, _sigint_handler)
+
+    # Register after _on_exit_guarded is defined
+    atexit.register(_on_exit_guarded)
 
     threading.Thread(target=alert_dispatcher, daemon=True).start()
 

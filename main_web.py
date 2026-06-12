@@ -531,11 +531,13 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                     anomaly_det.submit(track_id=-1, frame_crop=frame.copy())
 
                 full_res = anomaly_det.get_result(-1)
+                full_res_age = now - full_res.get("timestamp", 0) if full_res else 99
                 if (full_res
                         and full_res.get("is_alert")
-                        and (now - full_res.get("timestamp", 0)) < 5.0):
+                        and full_res_age < 5.0):
                     threat = full_res.get("threat") or "Weapon"
 
+                    # Draw bbox on frame as long as result is fresh enough to display
                     if DRAW_KNIFE_BBOX and full_res.get("boxes"):
                         for kbox in full_res["boxes"]:
                             kx1, ky1, kx2, ky2 = kbox
@@ -547,30 +549,34 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.55,
                                         (0, 0, 255), 2)
 
-                    if not tracked_objects:
-                        key = f"weapon:frame:{threat}"
-                        if now - last_alert_time.get(key, 0) > ALERT_COOLDOWN:
-                            alert_manager.send_alert(
-                                f"Unattended Weapon Detected: {threat}",
-                                "Camera", zone="—")
-                            snap_mgr.save(frame, f"Unattended Weapon Detected: {threat}", "Camera", "—")
-                            last_alert_time[key] = now
-                            active_violations.add("Weapon")
-                    else:
-                        per_person_caught = any(
-                            anomaly_det.get_result(tid) and
-                            anomaly_det.get_result(tid).get("is_alert")
-                            for tid in tracked_objects
-                        )
-                        if not per_person_caught:
-                            gid = last_seen_guard_name if last_seen_guard_name != "Post" else "Camera"
-                            key = f"weapon:fullframe:{threat}"
+                    # Only alert + snapshot when result is truly fresh (≤2s).
+                    # Beyond that the weapon may have left frame — the snapshot
+                    # would capture a clean frame and confuse the operator.
+                    if full_res_age < 2.0:
+                        if not tracked_objects:
+                            key = f"weapon:frame:{threat}"
                             if now - last_alert_time.get(key, 0) > ALERT_COOLDOWN:
                                 alert_manager.send_alert(
-                                    f"Weapon Detected: {threat}", gid, zone="—")
-                                snap_mgr.save(frame, "Weapon Detected", f"{threat}", gid)
+                                    f"Unattended Weapon Detected: {threat}",
+                                    "Camera", zone="—")
+                                snap_mgr.save(frame, f"Unattended Weapon Detected: {threat}", "Camera", "—")
                                 last_alert_time[key] = now
                                 active_violations.add("Weapon")
+                        else:
+                            per_person_caught = any(
+                                anomaly_det.get_result(tid) and
+                                anomaly_det.get_result(tid).get("is_alert")
+                                for tid in tracked_objects
+                            )
+                            if not per_person_caught:
+                                gid = last_seen_guard_name if last_seen_guard_name != "Post" else "Camera"
+                                key = f"weapon:fullframe:{threat}"
+                                if now - last_alert_time.get(key, 0) > ALERT_COOLDOWN:
+                                    alert_manager.send_alert(
+                                        f"Weapon Detected: {threat}", gid, zone="—")
+                                    snap_mgr.save(frame, f"Weapon Detected: {threat}", gid, "—")
+                                    last_alert_time[key] = now
+                                    active_violations.add("Weapon")
 
             # ── 4. Fight ──────────────────────────────────────────────────────
             fight_pairs = fight_det.update(tracked_objects,
@@ -702,8 +708,14 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                         anomaly_det.submit(track_id, crop)
                     res = anomaly_det.get_result(track_id)
                     if res:
-                        anomaly_label  = res["label"]
-                        anomaly_threat = res.get("threat")
+                        # Only act on results fresher than 2 seconds.
+                        # The crop scan runs every 12 frames (~0.4s at 30fps).
+                        # A stale result means the weapon is no longer visible
+                        # in the current frame — snapshot would be misleading.
+                        res_age = now - res.get("timestamp", 0)
+                        if res_age < 2.0:
+                            anomaly_label  = res["label"]
+                            anomaly_threat = res.get("threat")
 
                 # ── Trajectory ────────────────────────────────────────────────
                 current_zone = zone_detector.get_current_zone(track_id)

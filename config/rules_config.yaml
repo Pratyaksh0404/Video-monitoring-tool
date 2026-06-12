@@ -89,15 +89,15 @@ email:
   password: ""             # Gmail App Password (NOT your real password)
   recipients: []           # receiver's email id
   alert_types:
-    - Weapon Detected
-    - Unattended Weapon Detected
-    - Fire Detected
-    - Fight / Violence Detected
-    - Guard Under Attack
-    - Guard Sleeping
-    - Guard Missing
-    - Guard Smoking
-    - Camera Tamper
+  - Weapon Detected
+  - Unattended Weapon Detected
+  - Fire Detected
+  - Fight / Violence Detected
+  - Guard Under Attack
+  - Guard Sleeping
+  - Guard Missing
+  - Guard Smoking
+  - Camera Tamper
   cooldown: 200
 
 # ── WhatsApp Alerts ──────────────────────────────────────────
@@ -119,17 +119,15 @@ whatsapp:
   page_load_wait: 19       # Seconds to wait for WhatsApp Web to load (tune if needed)
   chrome_profile: Default  # Chrome profile (Default, Profile 1, etc.)
   alert_types:
-    - Weapon Detected
-    - Unattended Weapon Detected
-    - Fire Detected
-    - Fight / Violence Detected
-    - Guard Under Attack
-    - Guard Missing
-    - Guard Sleeping
-    - Camera Tamper
-    - Guard Smoking
-
-# Twilio config (only needed if transport: twilio)
+  - Weapon Detected
+  - Unattended Weapon Detected
+  - Fire Detected
+  - Fight / Violence Detected
+  - Guard Under Attack
+  - Guard Sleeping
+  - Guard Missing
+  - Guard Smoking
+  - Camera Tamper
 twilio:
   account_sid: ""
   auth_token: ""
