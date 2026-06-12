@@ -23,5 +23,5 @@ uploads/
 model_cache/
 src/data
 src/snapshots
-src/logs/system.log
+src/logs
 PyWhatKit_DB.txt
