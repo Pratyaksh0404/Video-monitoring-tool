@@ -670,6 +670,102 @@ def _on_exit():
         print(f"[GMS] Report send on exit failed: {e}")
 
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# NoviSentra REST API v1
+# Registered here (after all existing routes/vars are defined) so imports
+# can reference _alert_log, _alert_log_lock, send_session_report, etc.
+# All /api/v1/* endpoints are additive — nothing existing changes.
+# ═══════════════════════════════════════════════════════════════════════════════
+def _register_v1_api():
+    try:
+        from novisentra.alerting.webhook_backend import WebhookBackend
+        from novisentra.alerting.router import AlertRouter
+        from novisentra.alerting.email_backend import EmailAlertBackend
+        from novisentra.alerting.whatsapp_backend import WhatsAppAlertBackend
+
+        # ── Webhook backend (singleton) ───────────────────────────────────────
+        webhook_backend = WebhookBackend(
+            persist_path=os.path.join(_BASE_DIR, "config", "webhooks.json")
+        )
+
+        # ── Alert router — fans out alert_queue to all backends ───────────────
+        # NOTE: The existing code in this file already calls
+        # _email_alerter.send() and _whatsapp_alerter.send() directly from
+        # the alert_queue consumer thread. The router is additive — it reads
+        # the same queue and adds webhook delivery without touching existing paths.
+        router = AlertRouter(alert_queue)
+        router.register(webhook_backend)   # email/WA already handled by existing code
+        router.start()
+
+        # ── Pipeline state (shared with health endpoint) ──────────────────────
+        pipeline_state = {
+            "running":       False,
+            "source_label":  "—",
+            "anomaly_ready": False,
+            "clip_ready":    False,
+        }
+
+        # Update pipeline state when pipeline starts
+        _orig_start = main_web.start
+        def _patched_start(source=0, source_label="Camera 0"):
+            pipeline_state["running"]      = True
+            pipeline_state["source_label"] = source_label
+            _orig_start(source=source, source_label=source_label)
+        main_web.start = _patched_start
+
+        # ── SSE generator reusable function ───────────────────────────────────
+        def _sse_gen():
+            """Same SSE logic as /alerts/stream, reused by /api/v1/alerts/live."""
+            import queue as _q
+            sub_q = _q.Queue(maxsize=200)
+            with _sse_lock:
+                _sse_subscribers.append(sub_q)
+            with _alert_log_lock:
+                history = list(_alert_log[-50:])
+            for alert in history:
+                yield f"data: {json.dumps(alert)}\n\n"
+            try:
+                while True:
+                    try:
+                        yield sub_q.get(timeout=20)
+                    except _q.Empty:
+                        yield ": keepalive\n\n"
+            except GeneratorExit:
+                with _sse_lock:
+                    if sub_q in _sse_subscribers:
+                        _sse_subscribers.remove(sub_q)
+
+        # ── Register blueprints ───────────────────────────────────────────────
+        import api.routes.health    as _r_health
+        import api.routes.stream    as _r_stream
+        import api.routes.alerts    as _r_alerts
+        import api.routes.webhooks  as _r_webhooks
+        import api.routes.analytics as _r_analytics
+        import api.routes.config    as _r_config
+        import api.routes.reports   as _r_reports
+
+        _r_health.register(app, pipeline_state)
+        _r_stream.register(app, main_web, streamer)
+        _r_alerts.register(app, _alert_log, _alert_log_lock, _sse_gen)
+        _r_webhooks.register(app, webhook_backend)
+        _r_analytics.register(app, streamer, _snap_mgr, _alert_log, _alert_log_lock)
+        _r_config.register(app, api_config_update, api_config, main_web)
+        _r_reports.register(app, send_session_report, generate_report,
+                            streamer, _alert_log, _alert_log_lock)
+
+        log.info("NoviSentra REST API v1 registered — /api/v1/*")
+
+    except Exception as _err:
+        log.warning(
+            f"REST API v1 registration failed: {_err} "
+            f"(dashboard continues to work normally)"
+        )
+
+
+_register_v1_api()
+
+
 if __name__ == "__main__":
     import atexit
     import signal
