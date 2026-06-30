@@ -1,6 +1,1 @@
-[2026-06-30 08:47:22] INFO     NoviSentra.flask_app Session too short (fewer than 3 alerts) — skipping report delivery.
-[2026-06-30 08:47:24] INFO     NoviSentra.main_web Waiting for first frame...
-[2026-06-30 08:47:24] INFO     NoviSentra.main_web Camera ready.
-[2026-06-30 08:47:25] INFO     NoviSentra.main_web Frame: 640x480, POST_AREA=(0, 0, 640, 480)
-[2026-06-30 08:47:32] INFO     NoviSentra.main_web PATROL Pratyaksh — C -> D
-[2026-06-30 08:47:32] DEBUG    NoviSentra.alert_manager [ALERT] Patrol: C -> D | Pratyaksh | Zone D | LOW
+# here the logs will be saved
