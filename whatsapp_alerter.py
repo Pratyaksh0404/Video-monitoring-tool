@@ -136,7 +136,7 @@ class WhatsAppAlerter:
         top_str = "\n".join(f"  • {t}: {c}" for t, c in top) if top else "  None"
 
         message = (
-            f"📊 GMS Shift Summary\n\n"
+            f"📊 NoviSentra Shift Summary\n\n"
             f"Date: {now.strftime('%d %b %Y  %H:%M')}\n"
             f"Total Alerts: {total}\n"
             f"High Severity: {high_cnt}\n"
@@ -173,7 +173,7 @@ class WhatsAppAlerter:
         has_med  = any(a.get("severity") == "medium" for a in alerts)
         emoji    = "🔴" if has_high else "🟡" if has_med else "🟢"
 
-        lines = [f"{emoji} GMS Security Alert", ""]
+        lines = [f"{emoji} NoviSentra Security Alert", ""]
         for a in alerts:
             lines.append(f"Alert: {a.get('type', '')}")
             guard = a.get("guard_id", "")
@@ -186,7 +186,7 @@ class WhatsAppAlerter:
             if ts:
                 lines.append(f"Time: {ts}")
             lines.append("")
-        lines.append("Check the GMS dashboard for live video.")
+        lines.append("Check the NoviSentra dashboard for live video.")
         return "\n".join(lines)
 
     # ── Worker ────────────────────────────────────────────────────────────────

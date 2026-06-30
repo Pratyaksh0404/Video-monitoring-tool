@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GMS — Guard Monitoring System</title>
+<title>NoviSentra</title>
 <link rel="icon" id="favicon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%230d0f12'/><circle cx='16' cy='16' r='7' fill='none' stroke='%2322c55e' stroke-width='2.5'/><circle cx='16' cy='16' r='3' fill='%2322c55e'/></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
@@ -1250,7 +1250,7 @@
   <div class="topbar">
     <div class="logo">
       <div class="pulse-dot" id="pulse-dot"></div>
-      GMS
+      NoviSentra
     </div>
 
     <!-- Tab navigation -->
@@ -2101,7 +2101,7 @@ function sendBrowserNotification(title, body) {
       new Notification(title, {
         body: body,
         icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="%23ef4444"/></svg>',
-        tag: 'gms-alert',
+        tag: 'NoviSentra-alert',
         requireInteraction: false,
       });
     } catch(e) {}
@@ -2193,7 +2193,7 @@ function appendAlert(a, isNew) {
   if (isNew && a.severity === 'high') {
     showToast(a.type + ' — ' + a.guard_id, true);
     playAlertBeep();
-    sendBrowserNotification('GMS Alert: ' + a.type, a.guard_id + ' — Zone ' + a.zone);
+    sendBrowserNotification('NoviSentra Alert: ' + a.type, a.guard_id + ' — Zone ' + a.zone);
     _onTabAlertHigh();
   }
 }
@@ -2906,7 +2906,7 @@ function generateReport() {
       showToast('Pop-up blocked — downloading HTML directly…', false);
       const a = document.createElement('a');
       a.href = '/api/report/generate?download=true';
-      a.download = 'GMS_ShiftReport.html';
+      a.download = 'NoviSentra_ShiftReport.html';
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -2917,13 +2917,13 @@ function generateReport() {
 
 // ── Browser tab alerts ─────────────────────────────────────────
 // Tracks unread HIGH severity alerts when tab is not focused.
-// Tab title: "⚠ 3 ALERTS — GMS" | Favicon: red pulsing dot
+// Tab title: "⚠ 3 ALERTS — NoviSentra" | Favicon: red pulsing dot
 // Resets when user focuses the tab.
 
 let _tabUnreadCount  = 0;
 let _tabPulseTimer   = null;
 let _tabPulseState   = false;
-const _titleBase     = 'GMS — Guard Monitoring System';
+const _titleBase     = 'NoviSentra';
 
 const _faviconGreen = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%230d0f12'/><circle cx='16' cy='16' r='7' fill='none' stroke='%2322c55e' stroke-width='2.5'/><circle cx='16' cy='16' r='3' fill='%2322c55e'/></svg>";
 const _faviconRed   = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%230d0f12'/><circle cx='16' cy='16' r='8' fill='%23ef4444'/><text x='16' y='21' text-anchor='middle' font-size='14' font-weight='bold' fill='white'>!</text></svg>";
@@ -2938,7 +2938,7 @@ function _startTabPulse() {
   _tabPulseTimer = setInterval(() => {
     _tabPulseState = !_tabPulseState;
     if (_tabPulseState) {
-      document.title = `⚠ ${_tabUnreadCount} ALERT${_tabUnreadCount !== 1 ? 'S' : ''} — GMS`;
+      document.title = `⚠ ${_tabUnreadCount} ALERT${_tabUnreadCount !== 1 ? 'S' : ''} — NoviSentra`;
       _setFavicon(_faviconRed);
     } else {
       document.title = _titleBase;

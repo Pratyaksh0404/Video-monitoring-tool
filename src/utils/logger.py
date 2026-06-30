@@ -1,7 +1,7 @@
 """
 src/utils/logger.py
 ───────────────────
-Structured logging for the GMS system.
+Structured logging for the NoviSentra system.
 
 Usage:
     from utils.logger import get_logger
@@ -58,7 +58,7 @@ def _configure_root():
         return
     _configured = True
 
-    root = logging.getLogger("gms")
+    root = logging.getLogger("NoviSentra")
     root.setLevel(logging.DEBUG)
     root.propagate = False
 
@@ -80,13 +80,13 @@ def _configure_root():
 
 def get_logger(name: str) -> logging.Logger:
     """
-    Get a named logger under the 'gms' namespace.
+    Get a named logger under the 'NoviSentra' namespace.
 
         log = get_logger("main_web")
         log = get_logger("flask_app")
     """
     _configure_root()
-    return logging.getLogger(f"gms.{name}")
+    return logging.getLogger(f"NoviSentra.{name}")
 
 
 # ── Session archiving ────────────────────────────────────────────────────────
@@ -159,7 +159,7 @@ def end_session_log() -> str | None:
 
 def set_debug_mode(enabled: bool):
     """Enable or disable DEBUG level console output."""
-    root = logging.getLogger("gms")
+    root = logging.getLogger("NoviSentra")
     for handler in root.handlers:
         if isinstance(handler, logging.StreamHandler) and not isinstance(
             handler, logging.FileHandler

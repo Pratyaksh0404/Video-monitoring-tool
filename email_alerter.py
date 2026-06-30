@@ -135,7 +135,7 @@ class EmailAlerter:
         timestamp  = alert.get("timestamp", "")
         sev_color  = "#dc2626" if severity == "high" else "#f59e0b"
 
-        subject = f"[GMS ALERT] {alert_type} — {guard_id}"
+        subject = f"[NoviSentra ALERT] {alert_type} — {guard_id}"
 
         snap_note = ""
         if snapshot_paths:
@@ -147,7 +147,7 @@ class EmailAlerter:
             <div style="max-width: 520px; margin: 0 auto; border: 2px solid #ef4444;
                         border-radius: 8px; overflow: hidden;">
                 <div style="background: #ef4444; color: white; padding: 16px 20px;">
-                    <h2 style="margin: 0; font-size: 18px;">⚠️ GMS Security Alert</h2>
+                    <h2 style="margin: 0; font-size: 18px;">⚠️ NoviSentra Security Alert</h2>
                 </div>
                 <div style="padding: 20px;">
                     <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
@@ -216,11 +216,11 @@ class EmailAlerter:
         now      = datetime.datetime.now()
         date_str = now.strftime("%d %B %Y")
         time_str = now.strftime("%H:%M")
-        filename = f"GMS_ShiftReport_{now.strftime('%Y%m%d_%H%M')}.html"
+        filename = f"NoviSentra_ShiftReport_{now.strftime('%Y%m%d_%H%M')}.html"
 
         total   = stats.get("alerts_today", 0)
         guards  = stats.get("guards_detected", 0)
-        subject = f"[GMS] Shift Report — {date_str} {time_str}"
+        subject = f"[NoviSentra] Shift Report — {date_str} {time_str}"
 
         body = f"""
         <html>
@@ -229,7 +229,7 @@ class EmailAlerter:
                         border-radius: 8px; overflow: hidden;">
                 <div style="background: #0d1117; color: white; padding: 16px 20px;">
                     <h2 style="margin: 0; font-size: 18px;">
-                        <span style="color:#22c55e">●</span> GMS Shift Report
+                        <span style="color:#22c55e">●</span> NoviSentra Shift Report
                     </h2>
                 </div>
                 <div style="padding: 20px;">

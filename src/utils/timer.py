@@ -1,7 +1,7 @@
 """
 src/utils/timer.py
 ──────────────────
-Lightweight per-module latency profiler for the GMS pipeline.
+Lightweight per-module latency profiler for the NoviSentra pipeline.
 
 Usage:
     from utils.timer import PipelineTimer

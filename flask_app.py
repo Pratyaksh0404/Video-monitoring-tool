@@ -533,7 +533,7 @@ def api_report_generate():
     # Serve inline (opens in browser tab) or as download
     as_file = request.args.get("download", "false").lower() == "true"
     disposition = "attachment" if as_file else "inline"
-    filename = f"GMS_ShiftReport_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.html"
+    filename = f"NoviSentra_ShiftReport_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.html"
 
     return Response(
         html,
@@ -660,14 +660,14 @@ _exit_triggered = False
 
 def _on_exit():
     """Auto-send session report and archive the session log on normal exit."""
-    print("\n[GMS] Shutting down — sending session report...")
+    print("\n[NoviSentra] Shutting down — sending session report...")
     try:
         send_session_report()
         import time as _t
-        print("[GMS] Waiting 20s for shift report email to send...")
+        print("[NoviSentra] Waiting 20s for shift report email to send...")
         _t.sleep(20)
     except Exception as e:
-        print(f"[GMS] Report send on exit failed: {e}")
+        print(f"[NoviSentra] Report send on exit failed: {e}")
 
 
 
@@ -780,14 +780,14 @@ if __name__ == "__main__":
             import sys
             sys.exit(1)
         _exit_triggered = True
-        print("\n[GMS] Caught Ctrl+C — saving session log and sending report...")
+        print("\n[NoviSentra] Caught Ctrl+C — saving session log and sending report...")
 
         # ── 1. Archive the log FIRST — safe regardless of what happens next ──
         archived = save_session_log(
             datetime.datetime.fromtimestamp(_session_start)
         )
         if archived:
-            print(f"[GMS] Session log archived → {archived}")
+            print(f"[NoviSentra] Session log archived → {archived}")
 
         # ── 2. Send the report ────────────────────────────────────────────────
         try:
@@ -802,9 +802,9 @@ if __name__ == "__main__":
         # SMTP connect + Gmail auth + send = typically 4-10s on a good connection.
         # We wait a flat 20s — safe margin with no false-early-exit risk.
         import time as _t
-        print("[GMS] Waiting 20s for shift report email to send...")
+        print("[NoviSentra] Waiting 20s for shift report email to send...")
         _t.sleep(20)
-        print("[GMS] Done. Exiting.")
+        print("[NoviSentra] Done. Exiting.")
 
         import sys
         sys.exit(0)
@@ -821,7 +821,7 @@ if __name__ == "__main__":
             datetime.datetime.fromtimestamp(_session_start)
         )
         if archived:
-            print(f"[GMS] Session log archived → {archived}")
+            print(f"[NoviSentra] Session log archived → {archived}")
 
     signal.signal(signal.SIGINT, _sigint_handler)
 

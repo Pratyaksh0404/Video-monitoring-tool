@@ -109,7 +109,7 @@ def generate_report(alert_log: list, stats: dict, session_start: float) -> str:
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GMS Shift Report — {now.strftime('%d %b %Y')}</title>
+<title>NoviSentra Shift Report — {now.strftime('%d %b %Y')}</title>
 <style>
   * {{ box-sizing: border-box; margin: 0; padding: 0; }}
   body {{
@@ -444,9 +444,9 @@ def generate_report(alert_log: list, stats: dict, session_start: float) -> str:
     <div class="rh-left">
       <div class="rh-logo">
         <div class="rh-logo-dot"></div>
-        GMS
+        NoviSentra
       </div>
-      <div class="rh-subtitle">Guard Monitoring System — Shift Intelligence Report</div>
+      <div class="rh-subtitle">Shift Intelligence Report</div>
     </div>
     <div class="rh-right">
       <div class="rh-date">{now.strftime('%d %B %Y')}</div>
@@ -541,7 +541,7 @@ def generate_report(alert_log: list, stats: dict, session_start: float) -> str:
 
   <!-- Footer -->
   <div class="report-footer">
-    GMS — Guard Monitoring System &nbsp;·&nbsp;
+    NoviSentra  &nbsp;·&nbsp;
     Report generated {now.strftime('%Y-%m-%d %H:%M:%S')} &nbsp;·&nbsp;
     Session duration: {duration_str} &nbsp;·&nbsp;
     Total frames processed: {stats.get('frame_count', '—')}
@@ -557,7 +557,7 @@ function downloadHTML(e) {{
   const a    = document.createElement('a');
   const ts   = new Date().toISOString().slice(0,16).replace(/[T:]/g,'-');
   a.href     = url;
-  a.download = 'GMS_ShiftReport_' + ts + '.html';
+  a.download = 'NoviSentra_ShiftReport_' + ts + '.html';
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);

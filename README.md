@@ -371,8 +371,8 @@ src/logs/
 
 Log format:
 ```
-[2026-06-12 09:00:12] WARNING  gms.alert_manager  [ALERT] Guard Sleeping | Guard_Name | Zone C | HIGH
-[2026-06-12 09:01:17] WARNING  gms.alert_manager  [ALERT] Weapon Detected: Gun | Guard_Name | Zone — | HIGH
+[2026-06-12 09:00:12] WARNING  NoviSentra.alert_manager  [ALERT] Guard Sleeping | Guard_Name | Zone C | HIGH
+[2026-06-12 09:01:17] WARNING  NoviSentra.alert_manager  [ALERT] Weapon Detected: Gun | Guard_Name | Zone — | HIGH
 ```
 
 ---

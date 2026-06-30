@@ -1,7 +1,7 @@
 """
 camera_manager.py
 ─────────────────
-Manages multiple camera pipelines for the GMS dashboard.
+Manages multiple camera pipelines for the NoviSentra dashboard.
 
 Each camera gets its own:
   - VideoStreamReader
