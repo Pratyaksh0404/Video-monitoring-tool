@@ -32,6 +32,7 @@ import os
 import shutil
 import logging
 import datetime
+import threading
 
 # ── Paths ──────────────────────────────────────────────────────────────────
 _HERE        = os.path.dirname(os.path.abspath(__file__))
@@ -165,3 +166,105 @@ def set_debug_mode(enabled: bool):
             handler, logging.FileHandler
         ):
             handler.setLevel(logging.DEBUG if enabled else logging.INFO)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Per-profile session logs
+#
+# The existing system.log / save_session_log() above is ONE continuous
+# technical log for the whole running process (all levels, all profiles
+# mixed) — kept exactly as-is for troubleshooting, not touched by any of
+# this.
+#
+# This is a SEPARATE, additional mechanism specifically for the ALERT
+# HISTORY, split by profile: whichever profile is active when an alert
+# fires, that alert goes into THAT profile's own session log file.
+#
+# ── Redesigned 2026-07 (real bugs found from a live multi-profile test run) ──
+# Previous design batched alerts in memory (flask_app._alert_log) and only
+# wrote them to per-profile files inside send_session_report(), which was
+# assumed to fire on every profile switch. It didn't — across a 40-minute,
+# 4-profile test run it fired exactly ONCE, at final shutdown. That caused
+# two confirmed problems: (1) the per-profile filename embedded the
+# PROCESS START timestamp, so restarting the app mid-testing (which
+# happened, per the terminal logs) silently splits what a person thinks
+# of as "one session" into multiple file groups — "why did I get 7 files
+# for 4 profiles" — and (2) cross-checking the master log against the
+# per-profile files line-by-line showed ~35 of 144 real alerts never
+# made it into ANY per-profile file, most plausibly because they were
+# still sitting in the in-memory batch when something (a crash, a
+# restart) interrupted the run before the one deferred flush happened.
+#
+# Fix: write each alert to its profile's log file IMMEDIATELY, the
+# moment it fires (called directly from alert_manager.send_alert(), the
+# same place the master log line is written) — durable by construction,
+# the same way system.log already is, instead of depending on a
+# deferred batch flush ever happening. Filenames are now DATE-based
+# (session_{YYYY-MM-DD}_{profile_id}.log) rather than process-start-
+# based, so any number of restarts within the same day keep appending to
+# the SAME 4 files instead of fragmenting — matching "4 profiles = 4
+# files" as the actual expectation.
+# ═══════════════════════════════════════════════════════════════════════════
+
+_profile_log_lock = threading.Lock()
+
+
+def append_alert_to_profile_log(alert: dict) -> str | None:
+    """
+    Append ONE alert to its profile's session log file immediately.
+    Call this synchronously from wherever an alert is fired — do not
+    batch. Returns the filepath written, or None on failure (never
+    raises — a logging failure must not take down the alert pipeline).
+    """
+    try:
+        pid = alert.get("profile_id") or "unknown"
+        date_str = datetime.datetime.now().strftime("%Y-%m-%d")
+        dst = os.path.join(_SESSION_DIR, f"session_{date_str}_{pid}.log")
+        line = (
+            f"[{alert.get('timestamp', ''):8s}] "
+            f"{alert.get('severity', '').upper():8s} "
+            f"{alert.get('type', ''):32s} | "
+            f"{alert.get('guard_id', ''):20s} | "
+            f"Zone {alert.get('zone', ''):16s} | "
+            f"cam={alert.get('camera_id', '')}\n"
+        )
+        with _profile_log_lock:
+            with open(dst, "a", encoding="utf-8") as f:
+                f.write(line)
+        return dst
+    except Exception as e:
+        print(f"[logger] Could not append to per-profile session log: {e}")
+        return None
+
+
+def save_profile_alert_log(alerts: list) -> dict:
+    """
+    LEGACY / safety-net path — kept for send_session_report()'s existing
+    call site and for anything that still batches. Every alert passed
+    here has almost certainly already been written by
+    append_alert_to_profile_log() at the moment it fired, so this is now
+    a no-op for anything already on disk; it only matters as a fallback
+    if that immediate write somehow failed. Uses the SAME date-based
+    filename as append_alert_to_profile_log() so both paths always
+    target the same 4 files, never a second set.
+
+    Returns {profile_id: filepath} for whichever profiles had alerts in
+    this batch (empty dict if `alerts` was empty).
+    """
+    if not alerts:
+        return {}
+
+    date_str = datetime.datetime.now().strftime("%Y-%m-%d")
+    by_profile = {}
+    for a in alerts:
+        pid = a.get("profile_id") or "unknown"
+        by_profile.setdefault(pid, []).append(a)
+
+    written = {}
+    for profile_id, group in by_profile.items():
+        dst = os.path.join(_SESSION_DIR, f"session_{date_str}_{profile_id}.log")
+        written[profile_id] = dst
+        # Not re-writing the group here — append_alert_to_profile_log()
+        # already wrote each of these individually and immediately when
+        # they fired. Re-appending here would duplicate every line.
+    return written

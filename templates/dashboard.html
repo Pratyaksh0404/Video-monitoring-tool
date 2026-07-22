@@ -232,6 +232,104 @@
   }
   .no-feed svg { opacity: 0.3; }
 
+  /* ── Camera grid view — VMS-style wall, all feeds at once ────────── */
+  .camera-grid {
+    flex: 1;
+    display: grid;
+    gap: 3px;
+    padding: 3px;
+    background: var(--border);
+    overflow: hidden;
+  }
+  .grid-cell {
+    position: relative;
+    background: #000;
+    overflow: hidden;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 2px solid transparent;
+    transition: border-color 0.15s;
+  }
+  .grid-cell:hover { border-color: var(--accent); }
+  .grid-cell img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+  .grid-cell-label {
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    padding: 4px 8px;
+    background: linear-gradient(transparent, rgba(0,0,0,0.85));
+    font-family: var(--mono);
+    font-size: 10px;
+    color: #fff;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    pointer-events: none;
+  }
+  .grid-cell-badge {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--ok, #22c55e);
+    flex-shrink: 0;
+  }
+  .grid-cell.empty {
+    cursor: default;
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+  .grid-cell.empty:hover { border-color: transparent; }
+  .grid-toggle-btn.active {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: rgba(59,130,246,0.1);
+  }
+  .scenario-badge {
+    font-family: var(--mono);
+    font-size: 10px;
+    padding: 3px 10px;
+    border-radius: 10px;
+    border: 1px solid var(--border2);
+    color: var(--muted);
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+  }
+  .scenario-badge.guard_monitoring   { border-color: #3b82f6; color: #3b82f6; }
+  .scenario-badge.bank_security      { border-color: #f59e0b; color: #f59e0b; }
+  .scenario-badge.retail_analytics   { border-color: #22c55e; color: #22c55e; }
+  .scenario-badge.warehouse_ops      { border-color: #a855f7; color: #a855f7; }
+  .admin-btn {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 700;
+    padding: 6px 14px;
+    margin-left: 10px;
+    border-radius: 4px;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    text-decoration: none;
+    white-space: nowrap;
+  }
+  .admin-btn:hover { background: rgba(59,130,246,0.15); }
+  .logout-btn {
+    font-family: var(--mono);
+    font-size: 12px;
+    padding: 6px 12px;
+    margin-left: 8px;
+    border-radius: 4px;
+    border: 1px solid var(--border2);
+    color: var(--muted);
+    text-decoration: none;
+    white-space: nowrap;
+  }
+  .logout-btn:hover { color: var(--text); border-color: var(--muted); }
+
   /* Zone grid overlay */
   .zone-overlay {
     position: absolute;
@@ -1267,6 +1365,7 @@
 
     <!-- Right side: model pills + camera label + live badge -->
     <div class="topbar-right">
+      <span class="scenario-badge" id="scenario-badge" style="display:none;"></span>
       <div class="model-pills" id="model-pills">
         <div class="model-pill" id="pill-yolo">
           <div class="dot" id="pill-yolo-dot"></div>
@@ -1289,6 +1388,8 @@
       <select class="cam-select" id="cam-select" style="display:none;"
               onchange="switchCamera(this.value)">
       </select>
+      <a href="/admin" id="admin-link" class="admin-btn" style="display:none;">⚙ Admin Panel</a>
+      <a href="#" id="logout-link" onclick="doLogout()" class="logout-btn">Log out</a>
       <span class="mode-badge" id="mode-badge">LIVE</span>
     </div>
   </div>
@@ -1324,7 +1425,7 @@
 
     <!-- Video panel -->
     <div class="video-panel">
-      <div class="video-wrap">
+      <div class="video-wrap" id="single-view-wrap">
         <img id="live-img" src="/video_feed" alt="Video feed">
 
         <!-- Zone overlay -->
@@ -1346,6 +1447,9 @@
         </div>
       </div>
 
+      <!-- Grid view — all cameras at once, hidden by default -->
+      <div class="camera-grid" id="camera-grid" style="display:none;"></div>
+
       <!-- Controls -->
       <div class="video-controls">
         <button class="ctrl-btn primary" id="btn-webcam" onclick="switchToWebcam()">
@@ -1361,6 +1465,11 @@
         <div class="upload-progress" id="upload-progress">
           <div class="upload-progress-bar" id="upload-bar"></div>
         </div>
+
+        <button class="ctrl-btn grid-toggle-btn" id="btn-grid-toggle"
+                onclick="toggleGridView()" style="display:none; margin-left:auto;">
+          Grid view
+        </button>
 
         <span class="fps-badge" id="fps-badge">— fps</span>
       </div>
@@ -1696,7 +1805,7 @@
         </p>
         <div class="cfg-grid">
 
-          <div class="cfg-control">
+          <div class="cfg-control" data-cap="behavior_sleeping">
             <label class="cfg-label">
               Sleeping — CLIP threshold
               <span class="cfg-label-val" id="val-sleep-thresh">0.75</span>
@@ -1707,7 +1816,7 @@
             <span class="cfg-hint">Higher = fewer false positives (default 0.75)</span>
           </div>
 
-          <div class="cfg-control">
+          <div class="cfg-control" data-cap="behavior_sleeping">
             <label class="cfg-label">
               Sleeping — confirm ratio
               <span class="cfg-label-val" id="val-sleep-confirm">0.95</span>
@@ -1718,7 +1827,7 @@
             <span class="cfg-hint">Very strict — 9 of 10 readings must agree (default 0.95)</span>
           </div>
 
-          <div class="cfg-control">
+          <div class="cfg-control" data-cap="behavior_phone">
             <label class="cfg-label">
               Phone Use — CLIP threshold
               <span class="cfg-label-val" id="val-phone-thresh">0.50</span>
@@ -1728,7 +1837,7 @@
                    oninput="cfgSliderInput('sl-phone-thresh','val-phone-thresh')">
           </div>
 
-          <div class="cfg-control">
+          <div class="cfg-control" data-cap="behavior_phone">
             <label class="cfg-label">
               Phone Use — confirm ratio
               <span class="cfg-label-val" id="val-phone-confirm">0.60</span>
@@ -1738,7 +1847,7 @@
                    oninput="cfgSliderInput('sl-phone-confirm','val-phone-confirm')">
           </div>
 
-          <div class="cfg-control">
+          <div class="cfg-control" data-cap="behavior_smoking">
             <label class="cfg-label">
               Smoking — CLIP threshold
               <span class="cfg-label-val" id="val-smoke-thresh">0.70</span>
@@ -1748,7 +1857,7 @@
                    oninput="cfgSliderInput('sl-smoke-thresh','val-smoke-thresh')">
           </div>
 
-          <div class="cfg-control">
+          <div class="cfg-control" data-cap="behavior_smoking">
             <label class="cfg-label">
               Smoking — confirm ratio
               <span class="cfg-label-val" id="val-smoke-confirm">0.85</span>
@@ -1758,7 +1867,7 @@
                    oninput="cfgSliderInput('sl-smoke-confirm','val-smoke-confirm')">
           </div>
 
-          <div class="cfg-control">
+          <div class="cfg-control" data-cap="behavior_idle">
             <label class="cfg-label">
               Idle — CLIP threshold
               <span class="cfg-label-val" id="val-idle-thresh">0.50</span>
@@ -1768,7 +1877,8 @@
                    oninput="cfgSliderInput('sl-idle-thresh','val-idle-thresh')">
           </div>
 
-          <div class="cfg-control">
+          <div class="cfg-control"
+               data-cap="behavior_sleeping,behavior_phone,behavior_smoking,behavior_idle,behavior_distracted">
             <label class="cfg-label">
               Behavior check interval (frames)
               <span class="cfg-label-val" id="val-beh-interval">50</span>
@@ -1808,13 +1918,13 @@
                    min="5" max="600" value="30">
           </div>
 
-          <div class="cfg-control">
+          <div class="cfg-control" data-cap="behavior_idle">
             <label class="cfg-label">Guard idle cooldown (s)</label>
             <input type="number" class="cfg-number" id="num-idle-cooldown"
                    min="10" max="600" value="60">
           </div>
 
-          <div class="cfg-control">
+          <div class="cfg-control" data-cap="behavior_idle">
             <label class="cfg-label">Idle startup grace (s)</label>
             <input type="number" class="cfg-number" id="num-idle-grace"
                    min="0" max="300" value="90">
@@ -1841,7 +1951,7 @@
       <div class="cfg-section-body">
         <div class="cfg-grid">
 
-          <div class="cfg-control">
+          <div class="cfg-control" data-cap="weapon_detection">
             <label class="cfg-label">
               Weapon confidence
               <span class="cfg-label-val" id="val-weapon-conf">0.75</span>
@@ -1851,7 +1961,7 @@
                    oninput="cfgSliderInput('sl-weapon-conf','val-weapon-conf')">
           </div>
 
-          <div class="cfg-control">
+          <div class="cfg-control" data-cap="fire_detection">
             <label class="cfg-label">
               Fire min confidence
               <span class="cfg-label-val" id="val-fire-conf">0.55</span>
@@ -1861,41 +1971,41 @@
                    oninput="cfgSliderInput('sl-fire-conf','val-fire-conf')">
           </div>
 
-          <div class="cfg-control">
+          <div class="cfg-control" data-cap="fire_detection">
             <label class="cfg-label">Fire sustain seconds</label>
             <input type="number" class="cfg-number" id="num-fire-sustain"
                    min="1" max="30" value="6">
             <span class="cfg-hint">Fire must persist this long before alerting</span>
           </div>
 
-          <div class="cfg-control">
+          <div class="cfg-control" data-cap="fire_detection">
             <label class="cfg-label">Fire min consecutive detections</label>
             <input type="number" class="cfg-number" id="num-fire-consecutive"
                    min="1" max="20" value="3">
           </div>
 
-          <div class="cfg-control">
+          <div class="cfg-control" data-cap="crowd_detection">
             <label class="cfg-label">Crowd threshold (people)</label>
             <input type="number" class="cfg-number" id="num-crowd-threshold"
                    min="2" max="20" value="4">
             <span class="cfg-hint">Frame person count that triggers crowd alert</span>
           </div>
 
-          <div class="cfg-control">
+          <div class="cfg-control" data-cap="face_recognition">
             <label class="cfg-label">Face recognition tolerance</label>
             <input type="number" class="cfg-number" id="num-face-tolerance"
                    min="0.2" max="0.8" step="0.05" value="0.5">
             <span class="cfg-hint">Lower = stricter match (default 0.5)</span>
           </div>
 
-          <div class="cfg-control">
+          <div class="cfg-control" data-cap="unknown_person_risk">
             <label class="cfg-label">Unknown person grace (s)</label>
             <input type="number" class="cfg-number" id="num-unknown-grace"
                    min="1" max="120" value="12">
             <span class="cfg-hint">Delay before unknown person alert fires</span>
           </div>
 
-          <div class="cfg-control">
+          <div class="cfg-control" data-cap="behavior_idle">
             <label class="cfg-label">
               Idle max speed (px/s)
               <span class="cfg-label-val" id="val-idle-speed">12</span>
@@ -1950,13 +2060,13 @@
       <div class="cfg-section-body">
         <div class="cfg-grid">
 
-          <div class="cfg-control">
+          <div class="cfg-control" data-cap="loitering_detection">
             <label class="cfg-label">Unknown person loiter time (s)</label>
             <input type="number" class="cfg-number" id="num-loiter-unknown"
                    min="5" max="300" value="30">
           </div>
 
-          <div class="cfg-control">
+          <div class="cfg-control" data-cap="loitering_detection">
             <label class="cfg-label">Known person loiter time (s)</label>
             <input type="number" class="cfg-number" id="num-loiter-known"
                    min="10" max="600" value="90">
@@ -1976,7 +2086,7 @@
             <span class="cfg-hint">Max centroid jump between frames</span>
           </div>
 
-          <div class="cfg-control">
+          <div class="cfg-control" data-cap="crowd_detection">
             <label class="cfg-label">Post-crowd grace period (s)</label>
             <input type="number" class="cfg-number" id="num-crowd-grace"
                    min="0" max="60" value="10">
@@ -2109,17 +2219,33 @@ function sendBrowserNotification(title, body) {
 }
 
 // ── SSE — alert stream ─────────────────────────────────────────
-const evtSource = new EventSource('/alerts/stream');
+let evtSource = null;
 
-evtSource.onmessage = function(e) {
-  const alert = JSON.parse(e.data);
-  appendAlert(alert, true);
-  updateViolationCount(alert);
-};
+function connectAlertStream(camId) {
+  if (evtSource) evtSource.close();
+  document.getElementById('log-list').innerHTML = '';   // clear stale history from the previous camera
+  alertCount = 0;
+  const url = camId ? ('/alerts/stream?camera=' + encodeURIComponent(camId)) : '/alerts/stream';
+  evtSource = new EventSource(url);
 
-evtSource.onerror = function() {
-  showToast('Alert stream disconnected — reconnecting…', false);
-};
+  evtSource.onmessage = function(e) {
+    const alert = JSON.parse(e.data);
+    appendAlert(alert, true);
+    updateViolationCount(alert);
+  };
+  evtSource.onerror = function() {
+    showToast('Alert stream disconnected — reconnecting…', false);
+  };
+}
+
+// NOTE: no eager unfiltered connectAlertStream() call here anymore —
+// initMultiCamera() (called at the bottom of this script) is now the
+// single place that opens the alert stream, always with the correct
+// camera scope (or explicitly unfiltered only for genuine single-camera
+// deployments / on a logged, visible fetch failure). Opening an
+// unfiltered connection here AND a scoped one later created a window
+// where a failed /api/cameras fetch could leave the dashboard silently
+// stuck showing every camera's alerts mixed together forever.
 
 // ── Stats polling ──────────────────────────────────────────────
 function pollStats() {
@@ -2150,6 +2276,34 @@ setInterval(pollStats, 2000);
 pollStats();
 
 // ── Alert rendering ────────────────────────────────────────────
+// Terminology per profile — "Guard Sleeping"/"Patrol" are guard_monitoring
+// vocabulary and read oddly for other sectors. This translates the
+// DISPLAY text only — the underlying alert_type string stored in the
+// database/email/API stays stable (needed for severity lookup, filtering,
+// email templates) — only what the dashboard shows the person changes.
+const ROLE_NOUN = {
+  guard_monitoring: 'Guard',
+  bank_security:    'Staff',
+  warehouse_ops:    'Worker',
+  retail_analytics: 'Staff',
+};
+const MOVEMENT_LABEL = {
+  guard_monitoring: 'Patrol',
+  bank_security:    'Movement',
+  warehouse_ops:    'Movement',
+  retail_analytics: 'Movement',
+};
+let activeProfileId = 'guard_monitoring';
+
+function translateAlertType(rawType) {
+  const roleNoun  = ROLE_NOUN[activeProfileId] || 'Guard';
+  const moveLabel = MOVEMENT_LABEL[activeProfileId] || 'Patrol';
+  let t = rawType;
+  if (roleNoun !== 'Guard')   t = t.replace(/\bGuard\b/g, roleNoun);
+  if (moveLabel !== 'Patrol') t = t.replace(/^Patrol:/, moveLabel + ':');
+  return t;
+}
+
 function appendAlert(a, isNew) {
   alertCount++;
   document.getElementById('log-count').textContent = alertCount + ' event' + (alertCount === 1 ? '' : 's');
@@ -2157,6 +2311,7 @@ function appendAlert(a, isNew) {
 
   const alertId = a.id || '';
   const isAcked = a.acknowledged || false;
+  const displayType = translateAlertType(a.type);
 
   const item = document.createElement('div');
   item.className = 'log-item sev-' + (a.severity || 'low')
@@ -2169,7 +2324,7 @@ function appendAlert(a, isNew) {
     <div class="log-top">
       <div class="sev-bar ${a.severity}"></div>
       <div class="log-body">
-        <div class="log-type">${escHtml(a.type)}</div>
+        <div class="log-type">${escHtml(displayType)}</div>
         <div class="log-meta">${escHtml(a.guard_id)} &middot; Zone ${escHtml(a.zone)}</div>
       </div>
       <div class="log-time">${escHtml(a.timestamp)}</div>
@@ -2191,9 +2346,9 @@ function appendAlert(a, isNew) {
 
   // HIGH severity: beep + browser notification + tab alert
   if (isNew && a.severity === 'high') {
-    showToast(a.type + ' — ' + a.guard_id, true);
+    showToast(displayType + ' — ' + a.guard_id, true);
     playAlertBeep();
-    sendBrowserNotification('NoviSentra Alert: ' + a.type, a.guard_id + ' — Zone ' + a.zone);
+    sendBrowserNotification('NoviSentra Alert: ' + displayType, a.guard_id + ' — Zone ' + a.zone);
     _onTabAlertHigh();
   }
 }
@@ -2410,19 +2565,29 @@ function loadSystemLog() {
 
 // ── Multi-camera support ────────────────────────────────────────
 let currentCamId = null;
+let allCameras    = [];
+let gridViewActive = false;
+const GRID_MAX_CELLS = 16;   // matches a standard 4x4 NVR wall
 
 function initMultiCamera() {
   fetch('/api/cameras')
     .then(r => r.json())
     .then(d => {
-      if (!d.multi_camera) return;  // single-camera mode — do nothing
+      if (!d.multi_camera) {
+        // Genuinely single-camera deployment — nothing to filter by,
+        // an unfiltered stream is correct here (only one camera's
+        // alerts can ever appear in the log anyway).
+        connectAlertStream(null);
+        return;
+      }
+
+      allCameras = d.cameras.filter(c => c.enabled);
 
       const select = document.getElementById('cam-select');
       select.style.display = 'inline-block';
       select.innerHTML = '';
 
-      d.cameras.forEach(cam => {
-        if (!cam.enabled) return;
+      allCameras.forEach(cam => {
         const opt = document.createElement('option');
         opt.value = cam.cam_id;
         opt.textContent = cam.name;
@@ -2430,10 +2595,27 @@ function initMultiCamera() {
         select.appendChild(opt);
       });
 
-      // Switch to default camera
-      if (d.default) switchCamera(d.default);
+      if (allCameras.length > 1) {
+        document.getElementById('btn-grid-toggle').style.display = '';
+        renderCameraGrid();
+      }
+
+      if (d.default) {
+        switchCamera(d.default);   // this is what actually scopes the alert stream
+      } else {
+        console.error('NoviSentra: /api/cameras returned multi_camera=true but no default camera — alert stream will stay unfiltered.');
+        connectAlertStream(null);
+      }
     })
-    .catch(() => {});
+    .catch(err => {
+      // Previously silent — a failure here left the dashboard stuck on
+      // an unfiltered alert stream FOREVER with no visible sign why,
+      // which looked exactly like "alerts never stop mixing no matter
+      // what I do." Log it loudly instead, and still connect something
+      // rather than leaving the alert panel completely dead.
+      console.error('NoviSentra: /api/cameras fetch failed — alert stream will be unfiltered until this is resolved.', err);
+      connectAlertStream(null);
+    });
 }
 
 function switchCamera(camId) {
@@ -2447,10 +2629,205 @@ function switchCamera(camId) {
   if (opt) {
     document.getElementById('cam-label').textContent = opt.textContent;
   }
+  if (select) select.value = camId;
+
+  // Alert log/analytics must follow the camera — otherwise switching
+  // cameras (which may be running different profiles) shows a mix of
+  // whichever alerts happened to be in the global log.
+  connectAlertStream(camId);
+}
+
+// ── Grid view — VMS-style camera wall ───────────────────────────
+
+function gridColumnsFor(count) {
+  // Standard NVR wall sizing: 1x1, 2x2, 3x3, 4x4 — never more than 4 wide
+  if (count <= 1) return 1;
+  if (count <= 4) return 2;
+  if (count <= 9) return 3;
+  return 4;
+}
+
+function renderCameraGrid() {
+  const grid = document.getElementById('camera-grid');
+  const cols = gridColumnsFor(Math.min(allCameras.length, GRID_MAX_CELLS));
+  grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+
+  const cellCount = Math.max(allCameras.length, cols * cols);
+  let html = '';
+
+  for (let i = 0; i < cellCount && i < GRID_MAX_CELLS; i++) {
+    const cam = allCameras[i];
+    if (cam) {
+      html += `
+        <div class="grid-cell" onclick="maximizeFromGrid('${cam.cam_id}')" title="Click to maximize">
+          <img loading="lazy" src="/video_feed/${cam.cam_id}?${Date.now()}" alt="${escHtml(cam.name)}">
+          <div class="grid-cell-label">
+            <span>${escHtml(cam.name)}</span>
+            <span class="grid-cell-badge"></span>
+          </div>
+        </div>`;
+    } else {
+      html += `<div class="grid-cell empty">No camera</div>`;
+    }
+  }
+  grid.innerHTML = html;
+}
+
+function toggleGridView() {
+  gridViewActive = !gridViewActive;
+  const btn        = document.getElementById('btn-grid-toggle');
+  const singleView = document.getElementById('single-view-wrap');
+  const grid       = document.getElementById('camera-grid');
+  const camSelect  = document.getElementById('cam-select');
+
+  if (gridViewActive) {
+    singleView.style.display = 'none';
+    grid.style.display       = 'grid';
+    camSelect.style.display  = 'none';
+    btn.classList.add('active');
+    btn.textContent = 'Single view';
+    renderCameraGrid();   // refresh feed URLs with fresh timestamps
+  } else {
+    singleView.style.display = '';
+    grid.style.display       = 'none';
+    camSelect.style.display  = 'inline-block';
+    btn.classList.remove('active');
+    btn.textContent = 'Grid view';
+  }
+}
+
+function maximizeFromGrid(camId) {
+  toggleGridView();   // back to single view
+  switchCamera(camId);
 }
 
 // Initialize multi-camera on page load
 initMultiCamera();
+
+// ── Scenario/profile awareness — the "dynamic dashboard" ──────────
+// Maps each alert filter chip to the capability that must be enabled
+// for that alert type to ever fire under the active profile. Chips for
+// capabilities NOT in the active profile are hidden — e.g. retail_analytics
+// never shows "Sleeping"/"Phone"/"Idle" filters since those alerts can
+// never occur under that profile.
+const FILTER_TO_CAPABILITY = {
+  sleeping: 'behavior_sleeping',
+  phone:    'behavior_phone',
+  idle:     'behavior_idle',
+  patrol:   'zone_movement_tracking',
+  smoking:  'behavior_smoking',
+  fight:    'fight_detection',
+  fire:     'fire_detection',
+  crowd:    'crowd_detection',
+  weapon:   'weapon_detection',
+  tamper:   'camera_tamper',
+  // 'all' and 'absent' have no single owning capability — always shown
+};
+
+// Same idea, applied to the Settings tab (handoff point #6 — "Settings
+// tab still shows all threshold sliders regardless of profile"). Every
+// gated slider/number input in the Settings tab HTML carries a
+// data-cap="capability_key" attribute (comma-separated = visible if ANY
+// listed capability is active). Alert-type toggle rows get the same
+// data-cap attribute added dynamically in cfgBuildToggles() below. Must
+// stay in sync with novisentra/capabilities/registry.py, same as
+// FILTER_TO_CAPABILITY above.
+const ALERT_TYPE_CAPABILITY = {
+  'Weapon Detected':             'weapon_detection',
+  'Unattended Weapon Detected':  'weapon_detection',
+  'Fire Detected':                'fire_detection',
+  'Fight / Violence Detected':    'fight_detection',
+  'Guard Under Attack':           'fight_detection',
+  'Guard Sleeping':               'behavior_sleeping',
+  'Guard Smoking':                'behavior_smoking',
+  'Camera Tamper':                'camera_tamper',
+  'Phone Usage':                  'behavior_phone',
+  'Crowd Detected':               'crowd_detection',
+  // 'Guard Missing' intentionally absent — presence monitoring has no
+  // gating capability key, it always runs regardless of profile, so its
+  // toggle is never hidden.
+};
+
+let activeCapabilities = new Set();
+
+function applySettingsProfileVisibility() {
+  // Sliders / number inputs / toggle rows — any element with data-cap.
+  document.querySelectorAll('#view-settings [data-cap]').forEach(el => {
+    const caps = el.getAttribute('data-cap').split(',');
+    const visible = caps.some(c => activeCapabilities.has(c));
+    el.style.display = visible ? '' : 'none';
+  });
+
+  // Auto-hide a whole section only if it has at least one gated control
+  // AND every control in it (gated or not) ended up hidden — e.g. the
+  // Alert Type Toggles section always keeps "Guard Missing" visible, so
+  // it should never fully disappear even if every OTHER toggle in it
+  // is hidden for the active profile.
+  document.querySelectorAll('#view-settings .cfg-section').forEach(section => {
+    const gated = section.querySelectorAll('.cfg-control[data-cap], .cfg-toggle-row[data-cap]');
+    if (gated.length === 0) return;
+    const all = section.querySelectorAll('.cfg-control, .cfg-toggle-row');
+    const anyVisible = Array.from(all).some(c => c.style.display !== 'none');
+    section.style.display = anyVisible ? '' : 'none';
+  });
+}
+
+async function loadUserAndScenario() {
+  try {
+    const meResp = await fetch('/api/v1/auth/me', { credentials: 'same-origin' });
+    if (meResp.ok) {
+      const me = await meResp.json();
+      if (me.user && me.user.role === 'admin') {
+        document.getElementById('admin-link').style.display = 'inline';
+      }
+    }
+  } catch (e) { /* auth not configured yet — fine, just skip admin link */ }
+
+  try {
+    const profResp = await fetch('/api/v1/config/profiles', { credentials: 'same-origin' });
+    if (!profResp.ok) return;
+    const data = await profResp.json();
+    const profile = data.profiles[data.active];
+    if (!profile) return;
+
+    activeProfileId = data.active;   // drives translateAlertType() everywhere
+
+    // Scenario identity badge — the "subtle touch" per scenario
+    const badge = document.getElementById('scenario-badge');
+    badge.textContent = profile.name;
+    badge.className = 'scenario-badge ' + data.active;
+    badge.style.display = 'inline-block';
+
+    // Dynamic alert filter chips — only show what THIS profile can fire,
+    // and relabel the movement/patrol chip to match this profile's terms
+    const enabledCaps = new Set(profile.capabilities);
+    activeCapabilities = enabledCaps;   // also drives Settings tab visibility
+    applySettingsProfileVisibility();   // no-op if Settings tab hasn't been built yet
+    const moveLabel = MOVEMENT_LABEL[data.active] || 'Patrol';
+    document.querySelectorAll('.filter-chip[data-filter]').forEach(chip => {
+      const key = chip.getAttribute('data-filter');
+      const requiredCap = FILTER_TO_CAPABILITY[key];
+      chip.style.display = (requiredCap && !enabledCaps.has(requiredCap)) ? 'none' : '';
+      if (key === 'patrol') chip.textContent = moveLabel;
+    });
+
+    // Zone overlay — the hardcoded A/B/C/D quadrant boxes only make sense
+    // for grid-mode profiles. For named-zone profiles (retail/bank/
+    // warehouse/restaurant) they're actively misleading, so hide them.
+    const zoneOverlay = document.querySelector('.zone-overlay');
+    const zoneLabels  = document.querySelector('.zone-labels');
+    const isNamed = profile.zone_mode === 'named';
+    if (zoneOverlay) zoneOverlay.style.display = isNamed ? 'none' : '';
+    if (zoneLabels)  zoneLabels.style.display  = isNamed ? 'none' : '';
+  } catch (e) { /* profile API not reachable yet — dashboard still usable */ }
+}
+
+function doLogout() {
+  fetch('/api/v1/auth/logout', { method: 'POST', credentials: 'same-origin' })
+    .then(() => { window.location.href = '/login'; });
+}
+
+loadUserAndScenario();
 
 // ── Utils ──────────────────────────────────────────────────
 function escHtml(s) {
@@ -2845,7 +3222,7 @@ function hideTLTooltip() {
 
 // ── Snapshots ──────────────────────────────────────────────────
 function loadSnapshots() {
-  fetch('/api/snapshots')
+  fetch('/api/snapshots' + (currentCamId ? ('?camera=' + encodeURIComponent(currentCamId)) : ''))
     .then(r => r.json())
     .then(snaps => {
       const grid = document.getElementById('snapshots-grid');
@@ -3106,6 +3483,12 @@ function cfgPopulate(cfg) {
   document.querySelectorAll('#view-settings input').forEach(el => {
     el.addEventListener('change', cfgMarkDirty);
   });
+
+  // Re-apply profile-based hiding — cfgBuildToggles() just rebuilt the
+  // toggle rows from scratch, wiping any previously-applied hide state,
+  // and this also covers the case where cfgLoad() finishes before
+  // loadUserAndScenario() has set activeCapabilities yet.
+  applySettingsProfileVisibility();
 }
 
 // ── Toggle list builder ────────────────────────────────────
@@ -3115,8 +3498,10 @@ function cfgBuildToggles(containerId, allTypes, enabledTypes, prefix) {
   container.innerHTML = allTypes.map(type => {
     const id      = prefix + '-toggle-' + type.replace(/[^a-zA-Z0-9]/g, '_');
     const checked = enabledTypes.some(t => t.toLowerCase() === type.toLowerCase());
+    const cap     = ALERT_TYPE_CAPABILITY[type];
+    const capAttr = cap ? ` data-cap="${cap}"` : '';
     return `
-      <div class="cfg-toggle-row">
+      <div class="cfg-toggle-row"${capAttr}>
         <div>
           <div class="cfg-toggle-label">${escHtml(type)}</div>
         </div>

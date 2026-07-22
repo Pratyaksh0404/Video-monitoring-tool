@@ -32,6 +32,11 @@ def register(app, alert_log: list, alert_log_lock, sse_generator_fn):
         Query params:
           severity   str    Filter by severity: "high" | "medium" | "low"
           type       str    Filter by alert type substring (case-insensitive)
+          profile_id str    Filter to only alerts fired under this profile
+                             (e.g. "bank_security") — added 2026-07 so a
+                             profile's history can be viewed on its own
+                             after switching away and back, now that
+                             _alert_log is never wiped on switch.
           limit      int    Max results to return (default 50, max 500)
           offset     int    Pagination offset (default 0)
 
@@ -45,6 +50,7 @@ def register(app, alert_log: list, alert_log_lock, sse_generator_fn):
         """
         severity_filter = request.args.get("severity", "").lower()
         type_filter     = request.args.get("type", "").lower()
+        profile_filter  = request.args.get("profile_id", "")
         limit           = min(int(request.args.get("limit", 50)), 500)
         offset          = int(request.args.get("offset", 0))
 
@@ -56,6 +62,8 @@ def register(app, alert_log: list, alert_log_lock, sse_generator_fn):
             alerts = [a for a in alerts if a.get("severity") == severity_filter]
         if type_filter:
             alerts = [a for a in alerts if type_filter in a.get("type", "").lower()]
+        if profile_filter:
+            alerts = [a for a in alerts if a.get("profile_id") == profile_filter]
 
         total   = len(alerts)
         page    = alerts[offset: offset + limit]

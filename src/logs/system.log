@@ -1,1 +1,3 @@
-# here the logs will be saved
+[2026-07-21 10:37:20] INFO     NoviSentra.flask_app Session too short (fewer than 3 alerts) — skipping report delivery.
+[2026-07-21 10:37:27] INFO     NoviSentra.main_web PATROL Pratyaksh — D -> C -> D
+[2026-07-21 10:37:27] DEBUG    NoviSentra.alert_manager [ALERT] Movement: D -> C -> D | Pratyaksh | Zone D | LOW | cam=cam_1

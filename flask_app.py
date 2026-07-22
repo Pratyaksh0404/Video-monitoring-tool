@@ -40,7 +40,7 @@ _rules_config_path = os.path.join(_BASE_DIR, "config", "rules_config.yaml")
 if os.path.exists(_rules_config_path):
     try:
         import yaml
-        with open(_rules_config_path, "r") as f:
+        with open(_rules_config_path, "r", encoding="utf-8") as f:
             _rules_config = yaml.safe_load(f) or {}
     except Exception:
         pass
@@ -68,6 +68,29 @@ _email_alerter.set_snapshot_manager(_snap_mgr)
 _session_start    = time.time()
 
 
+def _get_session_start() -> float:
+    """Live getter — api/routes/reports.py needs this to generate correct
+    reports instead of the hardcoded 'time.time() - 3600' placeholder
+    that was there before (an approximation that was never actually
+    connected to the real session start time)."""
+    return _session_start
+
+
+def _dominant_profile(alerts: list) -> str:
+    """
+    Most common profile_id among a batch of alerts — used to pick which
+    terminology (Guard/Worker/Staff, Patrol/Movement) the shift report
+    for this batch should use. Falls back to guard_monitoring if the
+    batch has no profile_id data (e.g. very old alerts from before that
+    field existed).
+    """
+    from collections import Counter
+    profiles = [a.get("profile_id") for a in alerts if a.get("profile_id")]
+    if not profiles:
+        return "guard_monitoring"
+    return Counter(profiles).most_common(1)[0][0]
+
+
 app = Flask(__name__)
 app.config["UPLOAD_FOLDER"] = "uploads"
 app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024
@@ -82,6 +105,21 @@ _sse_subscribers= []
 _sse_lock       = threading.Lock()
 _acknowledged_alerts = set()
 _ack_lock            = threading.Lock()
+
+# Bug found 2026-07 ("profile history wiped on switch"): send_session_report()
+# used to capture-and-CLEAR _alert_log to build each shift-report email — which
+# meant every profile switch (now correctly triggering a report per switch,
+# see api/routes/config.py) also wiped the dashboard's live alert history for
+# that camera. Switching guard_monitoring -> bank_security -> guard_monitoring
+# again showed an EMPTY history for guard_monitoring's second stint instead of
+# appending to what was there before, even though the per-profile session LOG
+# FILE on disk was fine (that part writes immediately elsewhere and was never
+# affected). Fix: _alert_log is now purely additive for the life of the
+# process (dashboard/API/SSE-history source of truth, capped at 500 most
+# recent same as before) and is NEVER cleared by the report mechanism. A
+# separate, smaller buffer holds "alerts since the last report" for email
+# purposes only.
+_pending_report_alerts = []
 
 
 def allowed_file(fn):
@@ -104,32 +142,71 @@ def alert_dispatcher():
         alert["id"]           = str(uuid.uuid4())[:8]
         alert["acknowledged"] = False
 
-        # Email ALL alerts except Guard Idle and Patrol
-        # (should_send in EmailAlerter handles the filtering)
-        _email_alerter.send(alert)
+        # Defensive hardening (2026-07): this whole block used to run with
+        # no try/except. Any single exception here — a bad email/WhatsApp
+        # send, anything — would silently kill this ENTIRE background
+        # thread forever (daemon thread, no supervisor/restart), after
+        # which every subsequent alert would still log to system.log (a
+        # separate code path) but would never reach email, WhatsApp, the
+        # live dashboard SSE feed, or _alert_log again for the rest of the
+        # process's life, with no error printed anywhere. Per-profile
+        # session log files are unaffected either way now (they write
+        # directly from alert_manager.send_alert(), not through this
+        # queue) but email/WhatsApp/dashboard-live-view/_alert_log all
+        # still depend on this loop staying alive.
+        try:
+            # Email ALL alerts except Guard Idle and Patrol
+            # (should_send in EmailAlerter handles the filtering)
+            _email_alerter.send(alert)
 
-        # WhatsApp batches HIGH severity alerts
-        if alert.get("severity") == "high":
-            _whatsapp_alerter.send(alert)
+            # WhatsApp batches HIGH severity alerts
+            if alert.get("severity") == "high":
+                _whatsapp_alerter.send(alert)
 
-        daily_count += 1
-        streamer.update_stats(alerts_today=daily_count)
+            daily_count += 1
+            streamer.update_stats(alerts_today=daily_count)
 
-        with _alert_log_lock:
-            _alert_log.append(alert)
-            if len(_alert_log) > 500:
-                _alert_log.pop(0)
+            with _alert_log_lock:
+                _alert_log.append(alert)
+                if len(_alert_log) > 500:
+                    _alert_log.pop(0)
+                # Persistent (_alert_log, above) vs report-batch (below) are
+                # deliberately separate lists now — see the module-level
+                # comment on _pending_report_alerts for why.
+                _pending_report_alerts.append(alert)
 
-        payload = f"data: {json.dumps(alert)}\n\n"
-        with _sse_lock:
-            dead = []
-            for q in _sse_subscribers:
-                try:
-                    q.put_nowait(payload)
-                except queue.Full:
-                    dead.append(q)
-            for q in dead:
-                _sse_subscribers.remove(q)
+            payload = f"data: {json.dumps(alert)}\n\n"
+            alert_camera  = alert.get("camera_id")
+            alert_profile = alert.get("profile_id")
+            with _sse_lock:
+                dead = []
+                for entry in _sse_subscribers:
+                    q         = entry["queue"]
+                    cam_filter = entry["camera_id"]
+                    prof_filter = entry.get("profile_id")
+                    # No camera filter = receive everything (external/API
+                    # firehose connections). A camera-scoped connection also
+                    # only gets alerts matching the profile that camera had
+                    # WHEN THE CONNECTION OPENED — this is what makes
+                    # switching profiles on the same camera correctly stop
+                    # showing that camera's older-profile alerts, live, not
+                    # just after a fresh reconnect.
+                    if cam_filter is not None and alert_camera != cam_filter:
+                        continue
+                    if prof_filter is not None and alert_profile != prof_filter:
+                        continue
+                    try:
+                        q.put_nowait(payload)
+                    except queue.Full:
+                        dead.append(q)
+                for q in dead:
+                    _sse_subscribers[:] = [e for e in _sse_subscribers if e["queue"] is not q]
+        except Exception as e:
+            print(f"[alert_dispatcher] \u2717 Unhandled error processing alert "
+                  f"{alert.get('type', '?')!r}: {type(e).__name__}: {e} \u2014 "
+                  f"continuing (this alert may not have reached email/WhatsApp/"
+                  f"dashboard, but the dispatcher thread is still alive for "
+                  f"the next one).")
 
 
 # Guards against send_session_report being triggered concurrently
@@ -157,11 +234,14 @@ def send_session_report():
         return
 
     try:
-        # Capture AND clear the alert log atomically so a second call that
-        # somehow slips through always sees an empty list.
+        # Capture AND clear the PENDING-REPORT buffer (not _alert_log —
+        # that one is the persistent dashboard/API history and must never
+        # be wiped by a report/profile-switch; see its module-level
+        # comment). Atomic under the same lock so a second call that
+        # somehow slips through always sees an empty pending list.
         with _alert_log_lock:
-            alerts = list(_alert_log)
-            _alert_log.clear()
+            alerts = list(_pending_report_alerts)
+            _pending_report_alerts.clear()
 
         # Skip if there's nothing new to report (e.g. Ctrl+C fired shortly
         # after a manual "Send Report" from the dashboard already cleared the
@@ -177,6 +257,16 @@ def send_session_report():
         # only once — in _sigint_handler / _on_exit_guarded on real exit.
         # This means one source-switch = one report email, but still only
         # one session log file per run in the sessions/ folder.
+        # Capture the CURRENT segment's actual start time for the report
+        # about to be generated, THEN reset for the next segment — order
+        # matters. The previous version reset _session_start to time.time()
+        # BEFORE generating the report and passed that same freshly-reset
+        # value in as session_start, so every report computed its own
+        # duration against a timestamp taken moments before generation —
+        # which is why duration always showed ~0m 00s regardless of how
+        # long the segment actually ran (confirmed: 44 real alerts, but
+        # "Session: 09:42 – 09:42 (0m 00s)").
+        report_session_start = _session_start
         _session_start = time.time()   # reset timer for next segment's stats
 
         try:
@@ -185,7 +275,8 @@ def send_session_report():
             html = generate_report(
                 alert_log=alerts,
                 stats=session_stats,
-                session_start=_session_start,
+                session_start=report_session_start,
+                profile_id=_dominant_profile(alerts),
             )
 
             # Email report (HTML attached)
@@ -204,8 +295,81 @@ def send_session_report():
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
+@app.route("/login")
+def login_page():
+    # If already logged in, don't show the login form again — go straight
+    # to the dashboard (avoids confusing "why is it asking me to log in
+    # when I already did" on a fresh page load).
+    from api.middleware.session_auth import get_current_user
+    from flask import redirect
+    if get_current_user() is not None:
+        return redirect("/")
+    return render_template("login.html")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Universal login gate — EVERY route requires an authenticated session
+# except the small explicit allowlist below. This closes the gap where
+# only "/" was gated but /video_feed, /api/stats, /alerts/stream, etc.
+# were still reachable without logging in first — "we can't see someone
+# else's profile's things, everywhere should be like this."
+#
+# /api/v1/* is deliberately exempted from THIS check — those routes carry
+# their OWN auth (X-API-Key for external business integrations via
+# api.middleware.auth.require_api_key, or session-based @require_login /
+# @require_admin for the auth/admin panel routes) — they're not
+# unprotected, just protected by a different, more appropriate mechanism
+# for programmatic/API-key access rather than a browser-session redirect.
+# ═══════════════════════════════════════════════════════════════════════════
+_PUBLIC_PATHS = {"/login", "/api/v1/auth/login", "/api/v1/health"}
+
+
+@app.before_request
+def _require_session_everywhere():
+    path = request.path
+
+    if path in _PUBLIC_PATHS:
+        return None
+    if path.startswith("/static/"):
+        return None
+    if path.startswith("/api/v1/"):
+        # Own auth mechanism already applied at the route level — see
+        # docstring above. Not a bypass, a different (correct) gate.
+        return None
+
+    from api.middleware.session_auth import get_current_user
+    if get_current_user() is not None:
+        return None   # logged in — proceed
+
+    # Not logged in. JSON 401 for AJAX/streaming calls the dashboard's own
+    # JS makes (so it fails cleanly instead of getting HTML back), redirect
+    # to /login for an actual page load.
+    if (path.startswith("/api/") or path.startswith("/video_feed")
+            or path == "/alerts/stream"):
+        return jsonify({"error": "Not authenticated", "login_required": True}), 401
+
+    from flask import redirect
+    return redirect("/login")
+
+
+@app.route("/admin")
+def admin_page():
+    from api.middleware.session_auth import get_current_user
+    from flask import redirect
+    user = get_current_user()
+    if user is None:
+        return redirect("/login")
+    if not user.is_admin:
+        return redirect("/")
+    return render_template("admin.html")
+
+
 @app.route("/")
 def index():
+    from api.middleware.session_auth import get_current_user
+    from flask import redirect
+    if get_current_user() is None:
+        return redirect("/login")
     return render_template("dashboard.html")
 
 
@@ -219,13 +383,43 @@ def video_feed():
 
 @app.route("/alerts/stream")
 def alerts_stream():
+    # Camera-scoped AND profile-scoped. Camera-only scoping (the previous
+    # version) assumed different profiles only ever run on different
+    # cameras — true for a real customer (one licensed profile, applied
+    # to every camera they have), but NOT true for our own testing
+    # pattern of switching profiles on the SAME single camera to compare
+    # scenarios. Without also checking the camera's CURRENT profile,
+    # switching from guard_monitoring to retail_analytics on cam_1 would
+    # still show cam_1's old guard_monitoring alerts mixed in — exactly
+    # the bug confirmed by testing (alert panel showing "Guard Sleeping",
+    # "Worker Sleeping", and "Staff Smoking" all together for one camera).
+    requested_camera = request.args.get("camera") or None
+
+    def _current_profile_for(cam_id):
+        try:
+            from alerts.alert_manager import get_camera_profile
+            return get_camera_profile(cam_id)
+        except Exception:
+            return None
+
     def generate():
         q = queue.Queue(maxsize=200)
+        current_profile = _current_profile_for(requested_camera) if requested_camera else None
         with _sse_lock:
-            _sse_subscribers.append(q)
+            _sse_subscribers.append({
+                "queue": q,
+                "camera_id": requested_camera,
+                "profile_id": current_profile,
+            })
 
         with _alert_log_lock:
-            history = list(_alert_log[-50:])
+            if requested_camera:
+                history = [a for a in _alert_log
+                          if a.get("camera_id") == requested_camera
+                          and (current_profile is None or a.get("profile_id") == current_profile)
+                          ][-50:]
+            else:
+                history = list(_alert_log[-50:])
         for alert in history:
             yield f"data: {json.dumps(alert)}\n\n"
 
@@ -237,8 +431,7 @@ def alerts_stream():
                     yield ": keepalive\n\n"
         except GeneratorExit:
             with _sse_lock:
-                if q in _sse_subscribers:
-                    _sse_subscribers.remove(q)
+                _sse_subscribers[:] = [e for e in _sse_subscribers if e["queue"] is not q]
 
     return Response(
         stream_with_context(generate()),
@@ -391,7 +584,7 @@ def api_config():
     if os.path.exists(config_path):
         try:
             import yaml
-            with open(config_path, "r") as f:
+            with open(config_path, "r", encoding="utf-8") as f:
                 cfg = yaml.safe_load(f) or {}
             return jsonify(cfg)
         except ImportError:
@@ -456,7 +649,7 @@ def api_config_update():
         current = {}
         if os.path.exists(config_path):
             try:
-                with open(config_path, "r") as f:
+                with open(config_path, "r", encoding="utf-8") as f:
                     current = yaml.safe_load(f) or {}
             except Exception as e:
                 return jsonify({"error": f"Could not read config: {e}"}), 500
@@ -464,7 +657,7 @@ def api_config_update():
         deep_merge(current, data)
 
         try:
-            with open(config_path, "w") as f:
+            with open(config_path, "w", encoding="utf-8") as f:
                 yaml.dump(current, f, default_flow_style=False,
                           allow_unicode=True, sort_keys=False)
         except Exception as e:
@@ -528,6 +721,7 @@ def api_report_generate():
         alert_log=alerts,
         stats=streamer.stats,
         session_start=_session_start,
+        profile_id=_dominant_profile(alerts),
     )
 
     # Serve inline (opens in browser tab) or as download
@@ -609,8 +803,22 @@ def api_timeline():
 
 @app.route("/api/snapshots")
 def api_snapshots():
-    """List all saved alert snapshots, newest first."""
-    return jsonify(_snap_mgr.list_snapshots())
+    """List saved alert snapshots, newest first. ?camera=<cam_id> scopes
+    to just that camera's photos, AND automatically scopes to that
+    camera's CURRENT profile too — without this second part, a camera
+    tested under guard_monitoring, then retail_analytics, then
+    bank_security in one session shows all three profiles' snapshots
+    mixed together in the analytics tab, which is exactly what was
+    happening (same root issue the alert history had, fixed the same way)."""
+    camera_id = request.args.get("camera") or None
+    profile_id = None
+    if camera_id:
+        try:
+            from alerts.alert_manager import get_camera_profile
+            profile_id = get_camera_profile(camera_id)
+        except Exception:
+            pass
+    return jsonify(_snap_mgr.list_snapshots(camera_id=camera_id, profile_id=profile_id))
 
 
 @app.route("/api/snapshots/<filename>")
@@ -716,11 +924,18 @@ def _register_v1_api():
 
         # ── SSE generator reusable function ───────────────────────────────────
         def _sse_gen():
-            """Same SSE logic as /alerts/stream, reused by /api/v1/alerts/live."""
+            """
+            Same SSE logic as /alerts/stream, reused by /api/v1/alerts/live.
+            This one is deliberately UNFILTERED (camera_id=None) — it's the
+            external/API-integration stream (protected by API key), meant
+            to give a business consuming the REST API the full alert
+            firehose for whichever camera(s) their key has access to, not
+            scoped to "whichever camera a dashboard happens to be viewing."
+            """
             import queue as _q
             sub_q = _q.Queue(maxsize=200)
             with _sse_lock:
-                _sse_subscribers.append(sub_q)
+                _sse_subscribers.append({"queue": sub_q, "camera_id": None})
             with _alert_log_lock:
                 history = list(_alert_log[-50:])
             for alert in history:
@@ -733,8 +948,7 @@ def _register_v1_api():
                         yield ": keepalive\n\n"
             except GeneratorExit:
                 with _sse_lock:
-                    if sub_q in _sse_subscribers:
-                        _sse_subscribers.remove(sub_q)
+                    _sse_subscribers[:] = [e for e in _sse_subscribers if e["queue"] is not sub_q]
 
         # ── Register blueprints ───────────────────────────────────────────────
         import api.routes.health    as _r_health
@@ -744,22 +958,49 @@ def _register_v1_api():
         import api.routes.analytics as _r_analytics
         import api.routes.config    as _r_config
         import api.routes.reports   as _r_reports
+        import api.routes.auth        as _r_auth
+        import api.routes.admin       as _r_admin
+        import api.routes.recordings  as _r_recordings
 
         _r_health.register(app, pipeline_state)
         _r_stream.register(app, main_web, streamer)
         _r_alerts.register(app, _alert_log, _alert_log_lock, _sse_gen)
         _r_webhooks.register(app, webhook_backend)
         _r_analytics.register(app, streamer, _snap_mgr, _alert_log, _alert_log_lock)
-        _r_config.register(app, api_config_update, api_config, main_web)
+        _r_config.register(app, api_config_update, api_config, main_web, _cam_manager,
+                           send_session_report_fn=send_session_report)
         _r_reports.register(app, send_session_report, generate_report,
-                            streamer, _alert_log, _alert_log_lock)
+                            streamer, _alert_log, _alert_log_lock,
+                            get_session_start_fn=_get_session_start,
+                            dominant_profile_fn=_dominant_profile)
+
+        # ── Auth + admin panel (user accounts, camera/zone rename) ────────────
+        from novisentra.auth import init_db, revoke_all_sessions
+        init_db()
+        # Every server start requires a fresh login — a session cookie
+        # from before a restart must not silently keep working. SQLite
+        # sessions otherwise persist for 7 days across restarts by
+        # design (that's fine for "stay logged in within one running
+        # session"), but "system just started" should always mean
+        # "log in again," explicitly requested.
+        cleared = revoke_all_sessions()
+        if cleared:
+            log.info(f"Cleared {cleared} existing session(s) — fresh login required.")
+        _r_auth.register(app)
+        _r_admin.register(app, _cam_manager)
+
+        # ── Recorded-video batch analysis (8-9hr shift processing) ────────────
+        from novisentra.pipeline.batch_jobs import init_batch_jobs_table
+        init_batch_jobs_table()
+        _r_recordings.register(app)
 
         log.info("NoviSentra REST API v1 registered — /api/v1/*")
 
     except Exception as _err:
         log.warning(
             f"REST API v1 registration failed: {_err} "
-            f"(dashboard continues to work normally)"
+            f"(dashboard continues to work normally)",
+            exc_info=True,   # ← now logs the full traceback, not just the message
         )
 
 
@@ -836,5 +1077,5 @@ if __name__ == "__main__":
     else:
         main_web.start(source=0, source_label="Camera 0")
 
-    print("\n  Dashboard → http://127.0.0.1:5000\n")
+    print("\n  NoviSentra → http://127.0.0.1:5000/login\n")
     app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)

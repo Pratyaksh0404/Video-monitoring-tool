@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>NoviSentra — Admin Panel</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0d0f12; --panel: #181c22; --border: #252a33; --border2: #2e3540;
+    --text: #e6edf3; --muted: #8b949e; --accent: #3b82f6;
+    --ok: #22c55e; --danger: #f85149; --warn: #f59e0b;
+    --mono: 'SF Mono', Consolas, monospace;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+    background: var(--bg); color: var(--text); min-height: 100vh;
+  }
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 24px; border-bottom: 1px solid var(--border);
+  }
+  .logo { font-size: 18px; font-weight: 700; color: var(--accent); }
+  .topbar a { color: var(--muted); text-decoration: none; font-size: 13px; margin-left: 16px; }
+  .topbar a:hover { color: var(--text); }
+  .wrap { max-width: 1000px; margin: 0 auto; padding: 24px; }
+  .section {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; padding: 20px; margin-bottom: 20px;
+  }
+  .section h2 { font-size: 15px; margin-bottom: 4px; }
+  .section .sub { color: var(--muted); font-size: 12px; margin-bottom: 16px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: var(--muted); font-weight: 500; padding: 8px 10px;
+       border-bottom: 1px solid var(--border); font-size: 11px; text-transform: uppercase; }
+  td { padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  tr:last-child td { border-bottom: none; }
+  input[type=text], input[type=password], select {
+    background: var(--bg); border: 1px solid var(--border2); color: var(--text);
+    padding: 6px 10px; border-radius: 4px; font-size: 13px; width: 100%;
+  }
+  input:focus, select:focus { outline: none; border-color: var(--accent); }
+  button {
+    background: transparent; border: 1px solid var(--border2); color: var(--text);
+    padding: 6px 14px; border-radius: 4px; font-size: 12px; cursor: pointer;
+  }
+  button:hover { border-color: var(--muted); }
+  button.primary { border-color: var(--accent); color: var(--accent); }
+  button.primary:hover { background: rgba(59,130,246,0.1); }
+  button.danger { border-color: var(--danger); color: var(--danger); }
+  button.danger:hover { background: rgba(248,81,73,0.1); }
+  .row-actions { display: flex; gap: 6px; }
+  .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 3px;
+    font-size: 11px; font-family: var(--mono);
+  }
+  .badge.admin { background: rgba(59,130,246,0.15); color: var(--accent); }
+  .badge.viewer { background: rgba(139,148,158,0.15); color: var(--muted); }
+  .badge.active { background: rgba(34,197,94,0.15); color: var(--ok); }
+  .profile-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+  .profile-card {
+    border: 1px solid var(--border2); border-radius: 6px; padding: 12px;
+    cursor: pointer; transition: border-color 0.15s;
+  }
+  .profile-card:hover { border-color: var(--muted); }
+  .profile-card.active { border-color: var(--accent); background: rgba(59,130,246,0.06); }
+  .profile-card h3 { font-size: 13px; margin-bottom: 4px; }
+  .profile-card p { font-size: 11px; color: var(--muted); line-height: 1.4; }
+  .add-form { display: flex; gap: 8px; margin-top: 14px; }
+  .add-form input, .add-form select { flex: 1; }
+  .msg { font-size: 12px; padding: 8px 12px; border-radius: 4px; margin-bottom: 12px; display: none; }
+  .msg.ok { background: rgba(34,197,94,0.1); color: var(--ok); }
+  .msg.err { background: rgba(248,81,73,0.1); color: var(--danger); }
+  .cam-block { border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin-bottom: 10px; }
+  .cam-block-header { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .zone-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 12px; }
+  .zone-row .zone-id { color: var(--muted); font-family: var(--mono); width: 100px; flex-shrink: 0; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="logo">🛡️ NoviSentra — Admin Panel</div>
+  <div>
+    <a href="/">← Back to dashboard</a>
+    <a href="#" onclick="logout()">Log out</a>
+  </div>
+</div>
+
+<div class="wrap">
+
+  <div class="msg" id="msg"></div>
+
+  <!-- ── Active profile / scenario switcher ─────────────────────── -->
+  <div class="section">
+    <h2>Scenario / Profile</h2>
+    <div class="sub">Switching this changes which detectors run and what alerts fire — takes effect on the next camera stream restart.</div>
+    <div class="profile-grid" id="profile-grid">Loading…</div>
+  </div>
+
+  <!-- ── Cameras ──────────────────────────────────────────────────── -->
+  <div class="section">
+    <h2>Cameras</h2>
+    <div class="sub">Rename cameras and zones. Adding/removing cameras still requires editing camera_config.yaml and a restart.</div>
+    <div id="camera-list">Loading…</div>
+  </div>
+
+  <!-- ── Users ────────────────────────────────────────────────────── -->
+  <div class="section">
+    <h2>Users</h2>
+    <div class="sub">Admins can manage cameras/zones/users. Viewers can only see the dashboard.</div>
+    <table>
+      <thead><tr><th>Username</th><th>Role</th><th>Created</th><th></th></tr></thead>
+      <tbody id="user-list"><tr><td colspan="4">Loading…</td></tr></tbody>
+    </table>
+    <div class="add-form">
+      <input type="text" id="new-username" placeholder="Username">
+      <input type="password" id="new-password" placeholder="Password (min 8 chars)">
+      <select id="new-role">
+        <option value="viewer">Viewer</option>
+        <option value="admin">Admin</option>
+      </select>
+      <button class="primary" onclick="addUser()">Add user</button>
+    </div>
+  </div>
+
+</div>
+
+<script>
+let currentUserId = null;
+
+function showMsg(text, isError) {
+  const el = document.getElementById('msg');
+  el.textContent = text;
+  el.className = 'msg ' + (isError ? 'err' : 'ok');
+  el.style.display = 'block';
+  setTimeout(() => { el.style.display = 'none'; }, 4000);
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+async function api(path, opts) {
+  const resp = await fetch(path, Object.assign({ credentials: 'same-origin' }, opts || {}));
+  if (resp.status === 401) {
+    window.location.href = '/login';
+    return null;
+  }
+  return resp;
+}
+
+// ── Whoami / access gate ──────────────────────────────────────────
+async function checkAccess() {
+  const resp = await api('/api/v1/auth/me');
+  if (!resp) return false;
+  const data = await resp.json();
+  if (!resp.ok) { window.location.href = '/login'; return false; }
+  if (data.user.role !== 'admin') {
+    document.body.innerHTML =
+      '<div style="padding:60px;text-align:center;color:var(--muted);font-family:sans-serif;">' +
+      '<h2 style="color:var(--text);margin-bottom:10px;">Admin access required</h2>' +
+      '<p>Your account (' + escHtml(data.user.username) + ') is a viewer — ask an admin ' +
+      'for access, or <a href="/" style="color:var(--accent);">return to the dashboard</a>.</p></div>';
+    return false;
+  }
+  currentUserId = data.user.id;
+  return true;
+}
+
+// ── Profile switcher ───────────────────────────────────────────────
+async function loadProfiles() {
+  const resp = await api('/api/v1/config/profiles');
+  if (!resp) return;
+  const data = await resp.json();
+  const grid = document.getElementById('profile-grid');
+  grid.innerHTML = Object.entries(data.profiles).map(([id, p]) => `
+    <div class="profile-card ${id === data.active ? 'active' : ''}" onclick="switchProfile('${id}')">
+      <h3>${escHtml(p.name)} ${id === data.active ? '<span class="badge active">ACTIVE</span>' : ''}</h3>
+      <p>${escHtml(p.description)}</p>
+    </div>
+  `).join('');
+}
+
+async function switchProfile(profileId) {
+  const resp = await api('/api/v1/config/profile', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ profile: profileId }),
+  });
+  if (!resp) return;
+  const data = await resp.json();
+  if (resp.ok) {
+    showMsg(data.message || ('Profile set to "' + data.profile + '".'), false);
+    loadProfiles();
+  } else {
+    showMsg(data.error || 'Failed to switch profile', true);
+  }
+}
+
+// ── Cameras ─────────────────────────────────────────────────────────
+async function loadCameras() {
+  const resp = await api('/api/cameras');
+  if (!resp) return;
+  const data = await resp.json();
+  const list = document.getElementById('camera-list');
+
+  if (!data.cameras || data.cameras.length === 0) {
+    list.innerHTML = '<p style="color:var(--muted);font-size:13px;">No cameras configured.</p>';
+    return;
+  }
+
+  list.innerHTML = data.cameras.map(cam => `
+    <div class="cam-block">
+      <div class="cam-block-header">
+        <input type="text" id="cam-name-${cam.cam_id}" value="${escHtml(cam.name)}" style="max-width:240px;">
+        <button onclick="renameCamera('${cam.cam_id}')">Rename</button>
+        <span style="color:var(--muted);font-size:11px;margin-left:auto;">${escHtml(cam.cam_id)} · ${cam.enabled ? 'enabled' : 'disabled'}</span>
+      </div>
+      ${(cam.zones || []).map(z => `
+        <div class="zone-row">
+          <span class="zone-id">${escHtml(z.id)}</span>
+          <input type="text" id="zone-label-${cam.cam_id}-${z.id}" value="${escHtml(z.label || z.id)}">
+          <button onclick="renameZone('${cam.cam_id}', '${z.id}')">Rename</button>
+        </div>
+      `).join('') || '<div style="color:var(--muted);font-size:11px;">No named zones (uses grid mode, or not yet calibrated).</div>'}
+    </div>
+  `).join('');
+}
+
+async function renameCamera(camId) {
+  const newName = document.getElementById('cam-name-' + camId).value.trim();
+  if (!newName) return;
+  const resp = await api('/api/v1/admin/cameras/' + camId, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: newName }),
+  });
+  if (!resp) return;
+  const data = await resp.json();
+  if (resp.ok) { showMsg('Camera renamed to "' + newName + '"', false); loadCameras(); }
+  else showMsg(data.error || 'Rename failed', true);
+}
+
+async function renameZone(camId, zoneId) {
+  const newLabel = document.getElementById('zone-label-' + camId + '-' + zoneId).value.trim();
+  if (!newLabel) return;
+  const resp = await api('/api/v1/admin/cameras/' + camId + '/zones/' + zoneId, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ label: newLabel }),
+  });
+  if (!resp) return;
+  const data = await resp.json();
+  if (resp.ok) { showMsg('Zone renamed to "' + newLabel + '"', false); loadCameras(); }
+  else showMsg(data.error || 'Rename failed', true);
+}
+
+// ── Users ─────────────────────────────────────────────────────────
+async function loadUsers() {
+  const resp = await api('/api/v1/admin/users');
+  if (!resp) return;
+  const data = await resp.json();
+  const tbody = document.getElementById('user-list');
+  tbody.innerHTML = data.users.map(u => `
+    <tr>
+      <td>${escHtml(u.username)}</td>
+      <td><span class="badge ${u.role}">${u.role}</span></td>
+      <td style="color:var(--muted);">${escHtml((u.created_at || '').split('T')[0])}</td>
+      <td>
+        ${u.id === currentUserId
+          ? '<span style="color:var(--muted);font-size:11px;">(you)</span>'
+          : '<button class="danger" onclick="removeUser(' + u.id + ', \'' + escHtml(u.username) + '\')">Remove</button>'}
+      </td>
+    </tr>
+  `).join('');
+}
+
+async function addUser() {
+  const username = document.getElementById('new-username').value.trim();
+  const password = document.getElementById('new-password').value;
+  const role = document.getElementById('new-role').value;
+  if (!username || !password) { showMsg('Username and password required', true); return; }
+
+  const resp = await api('/api/v1/admin/users', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password, role }),
+  });
+  if (!resp) return;
+  const data = await resp.json();
+  if (resp.ok) {
+    showMsg('User "' + username + '" created', false);
+    document.getElementById('new-username').value = '';
+    document.getElementById('new-password').value = '';
+    loadUsers();
+  } else {
+    showMsg(data.error || 'Failed to create user', true);
+  }
+}
+
+async function removeUser(userId, username) {
+  if (!confirm('Remove user "' + username + '"? This cannot be undone.')) return;
+  const resp = await api('/api/v1/admin/users/' + userId, { method: 'DELETE' });
+  if (!resp) return;
+  const data = await resp.json();
+  if (resp.ok) { showMsg('User removed', false); loadUsers(); }
+  else showMsg(data.error || 'Failed to remove user', true);
+}
+
+async function logout() {
+  await api('/api/v1/auth/logout', { method: 'POST' });
+  window.location.href = '/login';
+}
+
+// ── Init ──────────────────────────────────────────────────────────
+(async function init() {
+  const ok = await checkAccess();
+  if (!ok) return;
+  loadProfiles();
+  loadCameras();
+  loadUsers();
+})();
+</script>
+</body>
+</html>

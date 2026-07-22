@@ -16,7 +16,8 @@ from detection.person_detector import PersonDetector
 from detection.tracker import CentroidTracker
 from analytics.presence import PresenceMonitor
 from analytics.inactivity import InactivityMonitor
-from analytics.behavior_engine import BehaviorEngine
+from analytics.behavior_engine import BehaviorEngine, set_confirm_ratio_overrides
+from analytics.behavior_classifier import set_min_conf_overrides
 from analytics.trajectory_tracker import TrajectoryTracker
 from analytics.loitering_detector import LoiteringDetector
 from analytics.fight_detector import FightDetector
@@ -39,7 +40,7 @@ def _load_config():
     if os.path.exists(config_path):
         try:
             import yaml
-            with open(config_path, "r") as f:
+            with open(config_path, "r", encoding="utf-8") as f:
                 cfg = yaml.safe_load(f) or {}
             log.info(f"Loaded config from {config_path}")
             return cfg
@@ -81,6 +82,25 @@ POST_CROWD_LOITER    = _cfg("crowd", "post_crowd_loiter", 15.0)
 DRAW_KNIFE_BBOX      = _cfg("weapon", "draw_knife_bbox", True)
 TRACKER_MAX_DISAP    = _cfg("tracker", "max_disappeared", 40)
 TRACKER_MAX_DIST     = _cfg("tracker", "max_distance", 300)
+
+
+def _apply_behavior_clip_config():
+    """
+    Push behavior.clip_thresholds / behavior.confirm_ratios from
+    rules_config.yaml into BehaviorClassifier / BehaviorEngine's live
+    override dicts. Bug fix 2026-07: the Settings tab's CLIP-threshold
+    and confirm-ratio sliders wrote to config but nothing ever read it
+    back — see the module docstrings in behavior_classifier.py and
+    behavior_engine.py for the full story. Called once at import time
+    below and again from reload_config() so a live Settings "Save &
+    Apply" actually reaches the classifier/engine immediately, matching
+    what the dashboard already claims happens.
+    """
+    set_min_conf_overrides(_cfg("behavior", "clip_thresholds", {}) or {})
+    set_confirm_ratio_overrides(_cfg("behavior", "confirm_ratios", {}) or {})
+
+
+_apply_behavior_clip_config()
 
 
 def reload_config():
@@ -128,6 +148,8 @@ def reload_config():
     DRAW_KNIFE_BBOX      = _cfg("weapon",   "draw_knife_bbox",   True)
     TRACKER_MAX_DISAP    = _cfg("tracker",  "max_disappeared",   40)
     TRACKER_MAX_DIST     = _cfg("tracker",  "max_distance",      300)
+
+    _apply_behavior_clip_config()
 
     log.info("Config reloaded — thresholds updated live.")
 
@@ -299,12 +321,62 @@ class BehaviorWorker:
 
 def run(source=0, source_label="Camera 0", beh_worker=None,
         beh_label_cache=None, beh_cache_lock=None, anomaly_det=None,
-        stop_event=None, cam_streamer=None):
+        stop_event=None, cam_streamer=None, zones=None):
     global _stop_event
 
     effective_stop     = stop_event if stop_event is not None else _stop_event
     effective_stop.clear()
     effective_streamer = cam_streamer if cam_streamer is not None else streamer
+
+    # ── Profile resolution ────────────────────────────────────────────────────
+    # camera_manager.py registers the active profile_id for THIS camera in
+    # a shared, cross-thread registry (alerts/alert_manager.py
+    # register_camera_profile/get_camera_profile) — NOT a contextvar,
+    # because a camera's pipeline thread runs run() as one long blocking
+    # call, and contextvars set from a different thread (e.g. the admin
+    # panel's Flask request thread) never reach an already-running
+    # thread's view of that variable. get_camera_profile() is a genuinely
+    # shared dict, so a live admin-panel switch is visible here on the
+    # very next capability check, no restart needed.
+    from alerts.alert_manager import get_camera_context, get_camera_profile
+    from novisentra.profiles import get_profile
+
+    _this_camera_id = get_camera_context()
+    _profile = get_profile(get_camera_profile(_this_camera_id)) or get_profile("guard_monitoring")
+    _zone_mode = _profile.zone_mode   # only used once at TrajectoryTracker construction below
+    log.info(f"Active profile: {_profile.id} ({len(_profile.capabilities)} capabilities enabled, "
+             f"zone_mode={_zone_mode})")
+
+    def _current_profile():
+        return get_profile(get_camera_profile(_this_camera_id)) or get_profile("guard_monitoring")
+
+    def _cap(name: str) -> bool:
+        """Is this capability enabled for the CURRENT profile? Re-resolved
+        live every call — reflects an admin-panel profile switch on the
+        very next frame, not after a restart."""
+        return name in _current_profile().capabilities
+
+    def _alert_allowed(alert_type: str) -> bool:
+        """
+        Is this specific alert type allowed to fire? Separate from _cap()
+        because a profile can suppress one alert type from a capability
+        that's otherwise still running — e.g. bank_security keeps
+        zone_movement_tracking enabled (for zone labeling) but suppresses
+        the "Patrol" alert specifically via alert_overrides.
+        """
+        overrides = _current_profile().alert_overrides or {}
+        for key, override in overrides.items():
+            if key.lower() in alert_type.lower():
+                if override.get("alert_enabled") is False:
+                    return False
+        return True
+
+    def _any_behavior_enabled() -> bool:
+        return any(
+            _cap(c) for c in ("behavior_sleeping", "behavior_phone",
+                              "behavior_smoking", "behavior_idle",
+                              "behavior_distracted")
+        )
 
     is_file = isinstance(source, str)
     effective_streamer.set_source("file" if is_file else "webcam", source_label)
@@ -313,7 +385,12 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
         os.path.dirname(os.path.abspath(__file__)),
         "src", "data", "enrolled_faces"
     )
-    known_encodings, known_names = load_enrolled_faces(faces_dir)
+    if _cap("face_recognition"):
+        known_encodings, known_names = load_enrolled_faces(faces_dir)
+    else:
+        known_encodings, known_names = [], []
+        log.info("face_recognition capability disabled for this profile — "
+                 "skipping enrolled face loading, all persons tracked as Unknown_N.")
     enrolled_names = set(known_names)
 
     try:
@@ -412,16 +489,23 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
 
             if post_area is None:
                 h, w = frame.shape[:2]
-                post_area     = (0, 0, w, h)
-                zone_detector = TrajectoryTracker(roi=post_area, grid_size=2)
-                log.info(f"Frame: {w}x{h}, POST_AREA={post_area}")
+                post_area = (0, 0, w, h)
+                if _zone_mode == "named" and zones:
+                    zone_detector = TrajectoryTracker(zone_mode="named", zones=zones)
+                    log.info(f"Frame: {w}x{h}, named zones: "
+                             f"{[z.get('id') for z in zones]}")
+                else:
+                    zone_detector = TrajectoryTracker(roi=post_area, grid_size=2)
+                    log.info(f"Frame: {w}x{h}, POST_AREA={post_area} (grid mode)")
 
             # ── Camera tamper check ───────────────────────────────────────────
-            tamper_event = camera_tamper.update(frame)
-            if tamper_event:
-                snap_mgr.save(frame, f"Camera Tamper: {tamper_event}", "Camera", "—")
-                alert_manager.send_alert(
-                    f"Camera Tamper: {tamper_event}", "Camera", zone="—")
+            tamper_event = None
+            if _cap("camera_tamper"):
+                tamper_event = camera_tamper.update(frame)
+                if tamper_event:
+                    snap_mgr.save(frame, f"Camera Tamper: {tamper_event}", "Camera", "—")
+                    alert_manager.send_alert(
+                        f"Camera Tamper: {tamper_event}", "Camera", zone="—")
 
             # ── Detection ────────────────────────────────────────────────────
             timer.start("person_detection")
@@ -470,7 +554,7 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                     anomaly_det.clear_result(dead_id)
 
             # ── Face recognition every 8 frames ──────────────────────────────
-            if frame_count % 8 == 0:
+            if _cap("face_recognition") and frame_count % 8 == 0:
                 timer.start("face_recognition")
                 face_results = recognize_faces_in_frame(
                     frame, known_encodings, known_names)
@@ -485,7 +569,7 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
             in_post_crowd_loiter = (now - crowd_ended_at) < POST_CROWD_LOITER
 
             # ── 1. Crowd ──────────────────────────────────────────────────────
-            if is_crowd:
+            if _cap("crowd_detection") and is_crowd:
                 if now - last_alert_time.get("crowd", 0) > ALERT_COOLDOWN:
                     snap_mgr.save(frame, "Crowd Detected", "Camera", "—")
                     alert_manager.send_alert("Crowd Detected", "Camera", zone="—")
@@ -493,7 +577,7 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                     active_violations.add("Crowd")
 
             # ── 2. Fire detection ─────────────────────────────────────────────
-            if anomaly_det and anomaly_det._fire_ready:
+            if _cap("fire_detection") and anomaly_det and anomaly_det._fire_ready:
                 if frame_count % FIRE_FRAME_INTERVAL == 0:
                     anomaly_det.submit_frame(frame)
 
@@ -526,7 +610,7 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                     fire_hits = [t for t in fire_hits if now - t < FIRE_SUSTAIN_SECS]
 
             # ── 3. Full-frame weapon scan ─────────────────────────────────────
-            if anomaly_det and anomaly_det.is_ready():
+            if _cap("weapon_detection") and anomaly_det and anomaly_det.is_ready():
                 if frame_count % 20 == 0:
                     anomaly_det.submit(track_id=-1, frame_crop=frame.copy())
 
@@ -556,10 +640,19 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                         if not tracked_objects:
                             key = f"weapon:frame:{threat}"
                             if now - last_alert_time.get(key, 0) > ALERT_COOLDOWN:
+                                # Reordered 2026-07: snap_mgr.save() now
+                                # called BEFORE send_alert(), matching the
+                                # pattern used everywhere else (e.g. the
+                                # send_alert() closure above) — gives the
+                                # async burst-write thread the maximum
+                                # possible head start before
+                                # email_alerter's polling thread starts
+                                # looking for files, instead of starting
+                                # the poll first and the burst second.
+                                snap_mgr.save(frame, f"Unattended Weapon Detected: {threat}", "Camera", "—")
                                 alert_manager.send_alert(
                                     f"Unattended Weapon Detected: {threat}",
                                     "Camera", zone="—")
-                                snap_mgr.save(frame, f"Unattended Weapon Detected: {threat}", "Camera", "—")
                                 last_alert_time[key] = now
                                 active_violations.add("Weapon")
                         else:
@@ -572,43 +665,56 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                                 gid = last_seen_guard_name if last_seen_guard_name != "Post" else "Camera"
                                 key = f"weapon:fullframe:{threat}"
                                 if now - last_alert_time.get(key, 0) > ALERT_COOLDOWN:
+                                    snap_mgr.save(frame, f"Weapon Detected: {threat}", gid, "—")
                                     alert_manager.send_alert(
                                         f"Weapon Detected: {threat}", gid, zone="—")
-                                    snap_mgr.save(frame, f"Weapon Detected: {threat}", gid, "—")
                                     last_alert_time[key] = now
                                     active_violations.add("Weapon")
 
             # ── 4. Fight ──────────────────────────────────────────────────────
+            # fight_det.update() always runs regardless of capability — it
+            # maintains the position-history data that fight_det.speed()
+            # depends on later (used for idle/loitering speed checks too,
+            # not just fight detection). Only the ALERT emission below is
+            # gated — disabling this capability means fights are no longer
+            # reported, not that speed tracking breaks for other features.
             fight_pairs = fight_det.update(tracked_objects,
                                            suppress=(is_crowd or in_post_crowd_grace))
-            for (id1, id2) in fight_pairs:
-                name1    = identity_memory.get(id1,
-                           unknown_tracker.get_slot(id1) or f"Guard_{id1}")
-                name2    = identity_memory.get(id2,
-                           unknown_tracker.get_slot(id2) or f"Guard_{id2}")
-                pair_key = f"fight:{min(id1,id2)}:{max(id1,id2)}"
+            if _cap("fight_detection"):
+                for (id1, id2) in fight_pairs:
+                    name1    = identity_memory.get(id1,
+                               unknown_tracker.get_slot(id1) or f"Guard_{id1}")
+                    name2    = identity_memory.get(id2,
+                               unknown_tracker.get_slot(id2) or f"Guard_{id2}")
+                    pair_key = f"fight:{min(id1,id2)}:{max(id1,id2)}"
 
-                if now - last_alert_time.get(pair_key, 0) > ALERT_COOLDOWN:
-                    known_in_pair = [n for t, n in identity_memory.items()
-                                     if t in (id1, id2)]
-                    if known_in_pair:
-                        msg = "Guard Under Attack"; gid = known_in_pair[0]
-                    else:
-                        msg = "Fight / Violence Detected"
-                        gid = f"{name1} & {name2}"
+                    if now - last_alert_time.get(pair_key, 0) > ALERT_COOLDOWN:
+                        known_in_pair = [n for t, n in identity_memory.items()
+                                         if t in (id1, id2)]
+                        if known_in_pair:
+                            msg = "Guard Under Attack"; gid = known_in_pair[0]
+                        else:
+                            msg = "Fight / Violence Detected"
+                            gid = f"{name1} & {name2}"
 
-                    zone1 = zone_detector.get_current_zone(id1) or "—"
-                    alert_manager.send_alert(msg, gid, zone=zone1)
-                    last_alert_time[pair_key] = now
-                    active_violations.add("Fight")
+                        zone1 = zone_detector.get_current_zone(id1) or "—"
+                        # Bug found 2026-07: this never called
+                        # snap_mgr.save() at all — same class of bug as
+                        # Guard Idle above. "Fight / Violence Detected"
+                        # and "Guard Under Attack" are both HIGH severity
+                        # and never had a screenshot by construction.
+                        snap_mgr.save(frame, msg, gid, zone1)
+                        alert_manager.send_alert(msg, gid, zone=zone1)
+                        last_alert_time[pair_key] = now
+                        active_violations.add("Fight")
 
-                if id1 in tracked_objects and id2 in tracked_objects:
-                    c1 = box_centroid(tracked_objects[id1])
-                    c2 = box_centroid(tracked_objects[id2])
-                    cv2.line(frame, c1, c2, (0, 0, 255), 2)
-                    mid = ((c1[0]+c2[0])//2-30, (c1[1]+c2[1])//2-12)
-                    cv2.putText(frame, "FIGHT", mid,
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0,0,255), 2)
+                    if id1 in tracked_objects and id2 in tracked_objects:
+                        c1 = box_centroid(tracked_objects[id1])
+                        c2 = box_centroid(tracked_objects[id2])
+                        cv2.line(frame, c1, c2, (0, 0, 255), 2)
+                        mid = ((c1[0]+c2[0])//2-30, (c1[1]+c2[1])//2-12)
+                        cv2.putText(frame, "FIGHT", mid,
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0,0,255), 2)
 
             # ─────────────────────────────────────────────────────────────────
             # PER-PERSON LOOP
@@ -683,7 +789,8 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                     c["present_frames"] += 1
 
                 # ── Behavior ──────────────────────────────────────────────────
-                run_behavior = (post_status == "PRESENT" and
+                run_behavior = (_any_behavior_enabled() and
+                                post_status == "PRESENT" and
                                 not (guard_id == "UNKNOWN" and is_crowd))
                 if run_behavior:
                     last_f = last_beh_frame.get(track_id, 0)
@@ -701,7 +808,7 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                 # ── Weapon (per-person crop) ───────────────────────────────────
                 anomaly_label  = "NORMAL"
                 anomaly_threat = None
-                if anomaly_det and anomaly_det.is_ready():
+                if _cap("weapon_detection") and anomaly_det and anomaly_det.is_ready():
                     if frame_count % 12 == track_id % 12:
                         x1a, y1a, x2a, y2a = person_box
                         crop = frame[max(0,y1a):y2a, max(0,x1a):x2a]
@@ -730,11 +837,18 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                             and latest_zone is not None
                             and last_patrol_alerted_zone.get(guard_id) != latest_zone):
                         short_path = id_traj.get_path_short(guard_id, PATROL_DISPLAY_ZONES)
-                        log.info(f"PATROL {guard_id} — {short_path}")
                         last_patrol_alerted_zone[guard_id] = latest_zone
                         get_compliance(guard_id)["patrol_zones"].add(latest_zone)
-                        alert_manager.send_alert(
-                            f"Patrol: {short_path}", guard_id, zone=display_zone)
+                        # Zone tracking/compliance bookkeeping above always runs
+                        # (needed for dwell time, display labels, compliance
+                        # score regardless of profile). Only the alert itself
+                        # is gated — e.g. bank_security/warehouse_ops disable
+                        # the "Patrol" alert via alert_overrides even though
+                        # zone_movement_tracking stays on for zone labeling.
+                        if _cap("zone_movement_tracking") and _alert_allowed("Patrol"):
+                            log.info(f"PATROL {guard_id} — {short_path}")
+                            alert_manager.send_alert(
+                                f"Patrol: {short_path}", guard_id, zone=display_zone)
                 else:
                     slot = alert_name
                     id_traj.update(slot, current_zone)
@@ -744,9 +858,11 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                 # ── Loitering ─────────────────────────────────────────────────
                 person_speed = fight_det.speed(track_id)
                 is_known     = guard_id != "UNKNOWN"
-                is_loitering = loitering_det.update(
-                    track_id, current_zone,
-                    is_known=is_known, current_speed=person_speed)
+                is_loitering = False
+                if _cap("loitering_detection"):
+                    is_loitering = loitering_det.update(
+                        track_id, current_zone,
+                        is_known=is_known, current_speed=person_speed)
 
                 # ── Draw overlays ─────────────────────────────────────────────
                 x1, y1, x2, y2 = person_box
@@ -793,26 +909,42 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                 if guard_id != "UNKNOWN":
                     c = get_compliance(guard_id)
 
-                    if "CONFIRMED_SLEEPING" in final_state and not is_moving:
+                    if (_cap("behavior_sleeping") and "CONFIRMED_SLEEPING" in final_state
+                            and not is_moving):
                         send_alert(f"sleep:{guard_id}", "Guard Sleeping")
                         c["sleeping_frames"] += 1
-                    elif "CONFIRMED_PHONE_USE" in final_state:
+                    elif _cap("behavior_phone") and "CONFIRMED_PHONE_USE" in final_state:
                         send_alert(f"phone:{guard_id}", "Phone Usage")
                         c["phone_frames"] += 1
-                    elif "CONFIRMED_SMOKING" in final_state and not is_moving:
+                    elif (_cap("behavior_smoking") and "CONFIRMED_SMOKING" in final_state
+                            and not is_moving):
                         send_alert(f"smoking:{guard_id}", "Guard Smoking")
 
-                    if (not is_moving and activity_status == "INACTIVE"
+                    if (_cap("behavior_idle")
+                          and not is_moving and activity_status == "INACTIVE"
                           and (now - pipeline_start_time) > IDLE_STARTUP_GRACE):
                         c["idle_frames"] += 1
                         idle_key = f"idle:{guard_id}"
                         if now - last_alert_time.get(idle_key, 0) > IDLE_COOLDOWN:
+                            # Bug found 2026-07: unlike Sleeping/Phone/
+                            # Smoking (which go through the shared
+                            # send_alert() closure above, which always
+                            # calls snap_mgr.save() first), this block
+                            # called alert_manager.send_alert() directly
+                            # and never called snap_mgr.save() at all —
+                            # "Guard Idle" could never have a screenshot
+                            # attached, 100% of the time, by construction.
+                            # Matches the exact logged pattern (every
+                            # single Guard/Staff Idle alert showed "No
+                            # snapshots found", with zero exceptions).
+                            snap_mgr.save(frame, "Guard Idle", alert_name, display_zone)
                             alert_manager.send_alert("Guard Idle", alert_name,
                                                      zone=display_zone)
                             last_alert_time[idle_key] = now
                             active_violations.add("Guard Idle")
 
-                    if anomaly_label == "WEAPON" and anomaly_threat:
+                    if (_cap("weapon_detection") and anomaly_label == "WEAPON"
+                            and anomaly_threat):
                         send_alert(f"weapon:{guard_id}:{anomaly_threat}",
                                    f"Weapon Detected: {anomaly_threat}")
 
@@ -845,19 +977,22 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
 
                     if not is_crowd and not in_post_crowd_grace and not sideways_suppressed:
                         slot_age = now - slot_birth.get(alert_name, now)
-                        if (slot_age > UNKNOWN_GRACE_SECS
+                        if (_cap("unknown_person_risk")
+                                and slot_age > UNKNOWN_GRACE_SECS
                                 and unknown_tracker.can_alert(alert_name)):
                             alert_manager.send_alert(
                                 "Unknown Person Detected", alert_name,
                                 zone=display_zone)
                             unknown_tracker.mark_alerted(alert_name)
 
-                    if "CONFIRMED_SLEEPING" in final_state:
+                    if _cap("unknown_person_risk") and _cap("behavior_sleeping") \
+                            and "CONFIRMED_SLEEPING" in final_state:
                         send_alert(f"sleep:{alert_name}", "Unknown Person Sleeping")
-                    elif "CONFIRMED_PHONE_USE" in final_state:
+                    elif _cap("unknown_person_risk") and _cap("behavior_phone") \
+                            and "CONFIRMED_PHONE_USE" in final_state:
                         send_alert(f"phone:{alert_name}", "Unknown Person Using Phone")
 
-                    if anomaly_label == "WEAPON" and anomaly_threat:
+                    if _cap("weapon_detection") and anomaly_label == "WEAPON" and anomaly_threat:
                         send_alert(f"weapon:{alert_name}:{anomaly_threat}",
                                    f"Weapon Detected: {anomaly_threat}")
 

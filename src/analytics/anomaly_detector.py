@@ -21,10 +21,6 @@ FIRE_REJECT_CLASSES = {"gun", "Gun", "knife", "Knife",
                        "grenade", "Grenade", "explosion", "Explosion"}
 
 # ── Fire color pre-filter thresholds ──────────────────────────────────────
-# Minimum fraction of the DETECTION BOUNDING BOX that must contain
-# fire-colored pixels (red/orange/yellow in HSV) for the detection to pass.
-# Lighting blur / window glare is gray-white → fails this check.
-# Real fire is strongly orange-red → passes easily.
 FIRE_COLOR_MIN_FRACTION = 0.08
 
 LOCAL_FIRE_MODEL_NAME = "fire_model.pt"
@@ -40,6 +36,32 @@ FIRE_MODEL_CANDIDATES = [
 
 _HERE      = os.path.dirname(os.path.abspath(__file__))
 _CACHE_DIR = os.path.join(_HERE, "..", "..", "model_cache", "yolo_threat")
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Shared model pool — multi-camera fix
+#
+# Previously every AnomalyDetector instance (one per camera, via
+# camera_manager.py) loaded its OWN copy of the weapon YOLO model and the
+# fire YOLO model from disk. With 2+ cameras starting simultaneously, this
+# meant 2x full model loads competing for the same CPU cores at once —
+# which is what caused the freeze with 2 cameras on a single-CPU laptop.
+#
+# Fix: the actual loaded model objects (self._weapon_model / self._fire_model)
+# are now MODULE-LEVEL singletons, loaded once regardless of camera count.
+# Every camera's AnomalyDetector still has its own independent queues,
+# results dict, and background thread — only the expensive model loading
+# is shared. Ultralytics YOLO models are safe for concurrent read-only
+# inference calls from multiple threads (no shared mutable state is
+# written during a forward pass), so this is safe for the CPU inference
+# this project uses.
+# ═══════════════════════════════════════════════════════════════════════════
+_shared_lock          = threading.Lock()
+_shared_weapon_model  = None
+_shared_weapon_ready  = False
+_shared_fire_model    = None
+_shared_fire_ready    = False
+_shared_load_started  = False
+_shared_load_complete = False   # set True only after BOTH weapon+fire attempts finish
 
 
 def _purge_stale_subdirs():
@@ -64,14 +86,10 @@ def _has_fire_colors(frame, box_xyxy) -> bool:
         region = frame[y1:y2, x1:x2]
 
         if region.size == 0:
-            return True  # can't check, allow through
+            return True
 
         hsv = cv2.cvtColor(region, cv2.COLOR_BGR2HSV)
 
-        # Fire/flame colors in HSV:
-        # Red-orange: H=0-25, high S, high V
-        # Yellow-orange: H=20-35, high S, high V
-        # Deep red wraps: H=170-180
         lower_fire1 = np.array([0,  100,  80], dtype=np.uint8)
         upper_fire1 = np.array([35, 255, 255], dtype=np.uint8)
         lower_fire2 = np.array([170, 100,  80], dtype=np.uint8)
@@ -91,7 +109,7 @@ def _has_fire_colors(frame, box_xyxy) -> bool:
         return fraction >= FIRE_COLOR_MIN_FRACTION
 
     except Exception:
-        return True  # on any error, allow through
+        return True
 
 
 class AnomalyDetector:
@@ -111,7 +129,7 @@ class AnomalyDetector:
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
 
-    # ── Public API ────────────────────────────────────────────────────────
+    # ── Public API (unchanged — no call sites need to change) ──────────────
 
     def submit(self, track_id, frame_crop):
         if not self._ready or frame_crop is None or frame_crop.size == 0:
@@ -143,7 +161,7 @@ class AnomalyDetector:
     def stop(self):
         self._stopped = True
 
-    # ── Model loading ─────────────────────────────────────────────────────
+    # ── Shared model loading ─────────────────────────────────────────────────
 
     def _flat_path(self, repo_id, filename):
         os.makedirs(_CACHE_DIR, exist_ok=True)
@@ -180,7 +198,9 @@ class AnomalyDetector:
             return False
         return True
 
-    def _try_load_local_fire_model(self):
+    def _try_load_local_fire_model_shared(self):
+        """Loads into the module-level shared slot, not self."""
+        global _shared_fire_model, _shared_fire_ready
         os.makedirs(_CACHE_DIR, exist_ok=True)
         local_path = os.path.join(_CACHE_DIR, LOCAL_FIRE_MODEL_NAME)
         if not os.path.exists(local_path):
@@ -191,9 +211,9 @@ class AnomalyDetector:
             m = YOLO(local_path)
             m.overrides["verbose"] = False
             if self._is_valid_fire_model(m):
-                self._fire_model  = m
-                self._fire_ready  = True
-                print(f"[AnomalyDetector] ✓ Fire detector ready (local). "
+                _shared_fire_model = m
+                _shared_fire_ready = True
+                print(f"[AnomalyDetector] ✓ Fire detector ready (local, shared). "
                       f"Classes: {list(m.names.values())}")
                 return True
             else:
@@ -204,52 +224,110 @@ class AnomalyDetector:
             return False
 
     def _load_models(self):
-        _purge_stale_subdirs()
+        """
+        Loads weapon + fire models ONCE into the module-level shared slots,
+        no matter how many AnomalyDetector instances (i.e. how many cameras)
+        call this. The first camera to reach here does the real work; every
+        camera after that just points self._weapon_model/self._fire_model
+        at the already-loaded shared objects — instant, no duplicate load.
+        """
+        global _shared_weapon_model, _shared_weapon_ready
+        global _shared_fire_model, _shared_fire_ready, _shared_load_started
+        global _shared_load_complete
+
+        with _shared_lock:
+            already_loaded = _shared_load_started
+            _shared_load_started = True
+
+        if already_loaded:
+            # Another camera already loaded (or is loading) the shared
+            # models — wait for that FULL load attempt to finish (both
+            # weapon AND fire, not just whichever succeeds first — a
+            # previous version of this wait broke as soon as EITHER was
+            # ready, which meant a slower fire-model load could be missed
+            # entirely by the second camera). Then reuse whatever the
+            # first camera ended up with.
+            for _ in range(600):   # up to 60s wait for the first load to finish
+                with _shared_lock:
+                    if _shared_load_complete:
+                        break
+                time.sleep(0.1)
+
+            with _shared_lock:
+                self._weapon_model = _shared_weapon_model
+                self._ready        = _shared_weapon_ready
+                self._fire_model   = _shared_fire_model
+                self._fire_ready   = _shared_fire_ready
+
+            if self._ready:
+                print("[AnomalyDetector] ✓ Weapon detector ready (shared, reused).")
+            if self._fire_ready:
+                print("[AnomalyDetector] ✓ Fire detector ready (shared, reused).")
+            return
+
+        # ── This camera is first — do the real loading ──────────────────────
         try:
-            from ultralytics import YOLO
+            _purge_stale_subdirs()
+            try:
+                from ultralytics import YOLO
 
-            # ── Weapon model ──────────────────────────────────────────────
-            path = self._try_hf_download(WEAPON_MODEL_REPO, WEAPON_MODEL_FILE)
-            if path:
-                self._weapon_model = YOLO(path)
-                self._weapon_model.overrides["verbose"] = False
-                names  = list(self._weapon_model.names.values())
-                active = [n for n in names if n not in WEAPON_EXCLUDED]
-                print(f"[AnomalyDetector] ✓ Weapon detector ready. Active: {active}")
-                self._ready = True
-            else:
-                print("[AnomalyDetector] ✗ Weapon model unavailable.")
+                # ── Weapon model ──────────────────────────────────────────
+                path = self._try_hf_download(WEAPON_MODEL_REPO, WEAPON_MODEL_FILE)
+                if path:
+                    model = YOLO(path)
+                    model.overrides["verbose"] = False
+                    names  = list(model.names.values())
+                    active = [n for n in names if n not in WEAPON_EXCLUDED]
+                    print(f"[AnomalyDetector] ✓ Weapon detector ready. Active: {active}")
+                    with _shared_lock:
+                        _shared_weapon_model = model
+                        _shared_weapon_ready = True
+                    self._weapon_model = model
+                    self._ready = True
+                else:
+                    print("[AnomalyDetector] ✗ Weapon model unavailable.")
 
-            # ── Fire model ────────────────────────────────────────────────
-            fire_loaded = self._try_load_local_fire_model()
-            if not fire_loaded:
-                for repo_id, filename in FIRE_MODEL_CANDIDATES:
-                    path = self._try_hf_download(repo_id, filename)
-                    if path:
-                        try:
-                            m = YOLO(path)
-                            m.overrides["verbose"] = False
-                            if self._is_valid_fire_model(m):
-                                self._fire_model  = m
-                                self._fire_ready  = True
-                                fire_loaded       = True
-                                print(f"[AnomalyDetector] ✓ Fire detector ready "
-                                      f"({repo_id}).")
-                                break
-                        except Exception as e:
-                            print(f"[AnomalyDetector] Load failed ({repo_id}): {e}")
-            if not fire_loaded:
-                print("[AnomalyDetector] ✗ Fire detection disabled.")
-                print(f"[AnomalyDetector] → Place fire_model.pt in: {_CACHE_DIR}")
+                # ── Fire model ──────────────────────────────────────────────
+                fire_loaded = self._try_load_local_fire_model_shared()
+                if not fire_loaded:
+                    for repo_id, filename in FIRE_MODEL_CANDIDATES:
+                        path = self._try_hf_download(repo_id, filename)
+                        if path:
+                            try:
+                                m = YOLO(path)
+                                m.overrides["verbose"] = False
+                                if self._is_valid_fire_model(m):
+                                    with _shared_lock:
+                                        _shared_fire_model = m
+                                        _shared_fire_ready = True
+                                    fire_loaded = True
+                                    print(f"[AnomalyDetector] ✓ Fire detector ready "
+                                          f"({repo_id}).")
+                                    break
+                            except Exception as e:
+                                print(f"[AnomalyDetector] Load failed ({repo_id}): {e}")
+                if not fire_loaded:
+                    print("[AnomalyDetector] ✗ Fire detection disabled.")
+                    print(f"[AnomalyDetector] → Place fire_model.pt in: {_CACHE_DIR}")
+                else:
+                    with _shared_lock:
+                        self._fire_model = _shared_fire_model
+                        self._fire_ready = _shared_fire_ready
 
-        except ImportError:
-            print("[AnomalyDetector] ultralytics not installed.")
-        except Exception as e:
-            import traceback
-            print(f"[AnomalyDetector] Load error: {e}")
-            traceback.print_exc()
+            except ImportError:
+                print("[AnomalyDetector] ultralytics not installed.")
+            except Exception as e:
+                import traceback
+                print(f"[AnomalyDetector] Load error: {e}")
+                traceback.print_exc()
+        finally:
+            # ALWAYS set this, even if loading failed/errored — otherwise
+            # every other camera waiting in the "already_loaded" branch
+            # above would hang for the full 60s timeout on every startup.
+            with _shared_lock:
+                _shared_load_complete = True
 
-    # ── Inference ─────────────────────────────────────────────────────────
+    # ── Inference (unchanged) ────────────────────────────────────────────────
 
     def _analyze_weapon(self, track_id, crop):
         label = "NORMAL"; threat = None; score = 0.0; is_alert = False
@@ -295,18 +373,13 @@ class AnomalyDetector:
                     cls_lower = cls.lower()
                     is_smoke_class = cls_lower in ("smoke",)
 
-                    # Indoor use: disable smoke class entirely to stop lighting false positives
                     if is_smoke_class and DISABLE_SMOKE_CLASS:
                         continue
 
-                    # Per-class confidence threshold
                     min_conf = SMOKE_CONFIDENCE if is_smoke_class else FIRE_CONFIDENCE
                     if conf < min_conf:
                         continue
 
-                    # ── Color pre-filter for fire/flames classes ─────────
-                    # Smoke class is gray so skip color check for it
-                    # Fire/flames must have red-orange pixels (rejects lighting)
                     if not is_smoke_class:
                         xyxy = box.xyxy[0].cpu().numpy()
                         if not _has_fire_colors(frame, xyxy):
@@ -314,7 +387,7 @@ class AnomalyDetector:
 
                     if conf > score:
                         score = conf
-                        threat = "Fire"  # always label as Fire (smoke class disabled)
+                        threat = "Fire"
                         label = "FIRE"
                         is_alert = True
 

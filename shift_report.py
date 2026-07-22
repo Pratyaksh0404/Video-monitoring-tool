@@ -17,8 +17,32 @@ import datetime
 import json
 from collections import Counter, defaultdict
 
+# Same terminology mapping used in alert_manager.py/dashboard.html — kept
+# as a small local copy rather than importing across the src/ boundary,
+# since shift_report.py has no other dependency on that package. If you
+# add a new profile, add its role/movement labels here too.
+_ROLE_NOUN = {
+    "guard_monitoring": "Guard",
+    "bank_security":    "Staff",
+    "warehouse_ops":    "Worker",
+    "retail_analytics": "Staff",
+}
+_ROLE_PLURAL = {
+    "guard_monitoring": "Guards",
+    "bank_security":    "Staff",
+    "warehouse_ops":    "Workers",
+    "retail_analytics": "Staff",
+}
+_MOVEMENT_LABEL = {
+    "guard_monitoring": "Patrol",
+    "bank_security":    "Movement",
+    "warehouse_ops":    "Movement",
+    "retail_analytics": "Movement",
+}
 
-def generate_report(alert_log: list, stats: dict, session_start: float) -> str:
+
+def generate_report(alert_log: list, stats: dict, session_start: float,
+                    profile_id: str = "guard_monitoring") -> str:
     """
     Generate a self-contained HTML shift report.
 
@@ -26,10 +50,19 @@ def generate_report(alert_log: list, stats: dict, session_start: float) -> str:
         alert_log:     list of alert dicts from _alert_log
         stats:         streamer.stats dict
         session_start: epoch time when session started
+        profile_id:    which profile was active this session — drives
+                       "Guard"/"Worker"/"Staff" and "Patrol"/"Movement"
+                       wording throughout the report. Defaults to
+                       guard_monitoring's wording for any existing call
+                       site that doesn't pass this yet.
 
     Returns:
         Complete HTML string — save as .html or serve directly.
     """
+    role        = _ROLE_NOUN.get(profile_id, "Guard")
+    role_plural = _ROLE_PLURAL.get(profile_id, "Guards")
+    move_label  = _MOVEMENT_LABEL.get(profile_id, "Patrol")
+
     now          = datetime.datetime.now()
     start_dt     = datetime.datetime.fromtimestamp(session_start)
     duration_sec = int((now - start_dt).total_seconds())
@@ -51,12 +84,19 @@ def generate_report(alert_log: list, stats: dict, session_start: float) -> str:
         guard    = a.get("guard_id", "")
         ts       = a.get("timestamp", "")
 
-        if atype.startswith("Patrol:"):
-            path = atype.replace("Patrol:", "").strip()
+        if atype.startswith("Patrol:") or atype.startswith("Movement:"):
+            prefix = "Patrol:" if atype.startswith("Patrol:") else "Movement:"
+            path = atype.replace(prefix, "").strip()
             for z in path.replace(" ", "").split("->"):
-                if z in ("A", "B", "C", "D"):
+                # Accept ANY zone label here, not just grid letters A-D —
+                # the previous version only recognized A/B/C/D, which
+                # silently dropped every zone for named-zone profiles
+                # (retail/bank/warehouse use zone names like "checkout"/
+                # "vault", never grid letters), making the zone heatmap
+                # and coverage % always empty/zero for those profiles.
+                if z:
                     guard_zones[guard].add(z)
-            type_counts["Patrol"] += 1
+            type_counts[move_label] += 1
         else:
             type_counts[atype] += 1
 
@@ -81,16 +121,22 @@ def generate_report(alert_log: list, stats: dict, session_start: float) -> str:
     compliance_scores = stats.get("compliance_scores", {})
     dwell_times       = stats.get("dwell_times", {})
 
-    # Guard patrol coverage
+    # Coverage % — previously hardcoded / 4 (assumed exactly 4 grid zones,
+    # A/B/C/D). Now uses however many distinct zones actually appeared
+    # this session, which is correct for both grid mode (naturally caps
+    # around 4 anyway) and named-zone profiles (however many named zones
+    # were actually visited/seen).
+    total_zones_seen = len(zone_counts) or 1
     guard_compliance = {
-        g: int(len(guard_zones[g]) / 4 * 100)
+        g: int(len(guard_zones[g]) / total_zones_seen * 100)
         for g in guards_list
     }
 
     # ── Build HTML ────────────────────────────────────────────────────────────
     guard_rows = _build_guard_rows(
         guards_list, guard_alert_counts, guard_compliance,
-        compliance_scores, dwell_times, guard_zones)
+        compliance_scores, dwell_times, guard_zones,
+        role=role, role_plural=role_plural, move_label=move_label)
 
     alert_rows = _build_alert_rows(alert_log[-100:])  # last 100 alerts
 
@@ -331,12 +377,14 @@ def generate_report(alert_log: list, stats: dict, session_start: float) -> str:
   }}
 
   /* ── Zone heatmap ── */
+  /* Was a fixed 2x2 grid (hardcoded for exactly 4 grid-letter zones,
+     A/B/C/D). Named-zone profiles can have anywhere from 1-8 zones
+     shown here now, so this flows responsively instead. */
   .zone-grid {{
     display: grid;
-    grid-template-columns: 1fr 1fr;
-    grid-template-rows: 1fr 1fr;
+    grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
     gap: 8px;
-    height: 160px;
+    min-height: 160px;
   }}
   .zh {{
     border-radius: 6px;
@@ -475,7 +523,7 @@ def generate_report(alert_log: list, stats: dict, session_start: float) -> str:
       <div class="kpi-sub">{top_zone[1]} alerts in zone</div>
     </div>
     <div class="kpi">
-      <div class="kpi-label">Guards Monitored</div>
+      <div class="kpi-label">{_esc(role_plural)} Monitored</div>
       <div class="kpi-val ok">{len(guards_list)}</div>
       <div class="kpi-sub">{stats.get('guards_detected', 0)} currently in frame</div>
     </div>
@@ -511,7 +559,7 @@ def generate_report(alert_log: list, stats: dict, session_start: float) -> str:
       </div>
     </div>
     <div class="card">
-      <div class="card-title">Guard Performance</div>
+      <div class="card-title">{_esc(role)} Performance</div>
       {guard_rows}
     </div>
   </div>
@@ -525,7 +573,7 @@ def generate_report(alert_log: list, stats: dict, session_start: float) -> str:
           <tr>
             <th>Time</th>
             <th>Alert</th>
-            <th>Guard</th>
+            <th>{_esc(role)}</th>
             <th>Zone</th>
             <th>Severity</th>
             <th>Status</th>
@@ -582,9 +630,11 @@ def _fmt_duration(secs: int) -> str:
 
 
 def _build_guard_rows(guards, alert_counts, patrol_cov, compliance_scores,
-                      dwell_times, guard_zones) -> str:
+                      dwell_times, guard_zones, role="Guard",
+                      role_plural="Guards", move_label="Patrol") -> str:
     if not guards:
-        return '<p style="color:#94a3b8;font-size:12px;padding:8px 0;">No named guards detected this session.</p>'
+        return (f'<p style="color:#94a3b8;font-size:12px;padding:8px 0;">'
+                f'No named {role.lower()} detected this session.</p>')
 
     rows = []
     for g in sorted(guards, key=lambda x: alert_counts.get(x, 0), reverse=True):
@@ -626,8 +676,8 @@ def _build_guard_rows(guards, alert_counts, patrol_cov, compliance_scores,
 
     return f"""<table class="data-table">
       <thead><tr>
-        <th>Guard</th><th>Alerts</th><th>Dwell</th>
-        <th>Patrol Coverage</th><th>Compliance</th><th>Zones Visited</th>
+        <th>{_esc(role)}</th><th>Alerts</th><th>Dwell</th>
+        <th>{_esc(move_label)} Coverage</th><th>Compliance</th><th>Zones Visited</th>
       </tr></thead>
       <tbody>{''.join(rows)}</tbody>
     </table>"""
@@ -670,18 +720,28 @@ def _build_incidents(incidents: list) -> str:
 
 
 def _build_zone_cells(zone_counts: Counter) -> str:
-    max_val = max(zone_counts.values()) if zone_counts else 1
+    # Previously hardcoded to exactly ["A","B","C","D"] — only meaningful
+    # for grid-mode profiles. Named-zone profiles (retail/bank/warehouse)
+    # have zones like "checkout"/"vault_approach", which would never
+    # appear in that hardcoded list, making this heatmap always empty for
+    # those profiles. Now shows whatever zones actually appeared this
+    # session, most-active first, capped at 8 so the layout stays sane.
+    if not zone_counts:
+        return '<p style="color:#94a3b8;font-size:12px;">No zone activity recorded.</p>'
+
+    top_zones = zone_counts.most_common(8)
+    max_val   = top_zones[0][1] if top_zones else 1
     cells = []
-    for zone in ["A", "B", "C", "D"]:
-        count = zone_counts.get(zone, 0)
+    for zone, count in top_zones:
         intensity = count / max(max_val, 1)
         r = int(219 + (29 - 219) * intensity)
         g_val = int(234 + (130 - 234) * intensity)
         b = int(254 + (246 - 254) * intensity)
         bg = f"rgb({r},{g_val},{b})"
+        display_zone = zone if len(zone) <= 14 else zone[:12] + "…"
         cells.append(f"""
         <div class="zh" style="background:{bg}">
-          <span class="zh-lbl">{zone}</span>
+          <span class="zh-lbl" style="font-size:15px;">{_esc(display_zone)}</span>
           <span class="zh-cnt">{count}</span>
           <span class="zh-sub">alerts</span>
         </div>""")

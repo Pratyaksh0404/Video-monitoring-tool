@@ -1,44 +1,154 @@
 # Define all cameras the system should monitor.
-# Each camera runs its own independent detection pipeline.
+# Each camera runs its own independent detection pipeline, with its own
+# profile (guard_monitoring / bank_security / retail_analytics /
+# warehouse_ops) and — for profiles using named zones — its own
+# calibrated zone polygons.
 #
 # Source types:
-#   - Webcam:    source: 0  (device index)
-#   - RTSP/IP:   source: "rtsp://user:pass@192.168.1.100:554/stream1"
-#   - Video file: source: "uploads/test_video.mp4"  (loops automatically)
+#   - Webcam:      source: 0  (device index — dev/testing only)
+#   - RTSP/DVR:    source: "rtsp://user:pass@192.168.1.100:554/stream1"
+#                  For DVR/NVR-fed cameras (the real deployment model —
+#                  see below), the URL usually encodes a channel number,
+#                  e.g. Hikvision/Dahua-style:
+#                  "rtsp://user:pass@DVR_IP:554/cam/realmonitor?channel=1&subtype=0"
+#                  Each physical camera is one "channel" on the SAME DVR —
+#                  add one `cam_*` entry per channel, all pointing at the
+#                  same DVR_IP with a different `channel=N`.
+#   - Video file:  source: "uploads/test_video.mp4"  (loops automatically)
 #
-# For testing with a single laptop webcam:
-#   - Set camera_1 to your webcam (source: 0)
-#   - Set camera_2 to a video file (source: "uploads/some_video.mp4")
+# Zone polygons are pixel coordinates in THAT camera's frame (e.g. a
+# 640x480 stream). Calibrate once per camera during setup — grab a still
+# frame, note the corner coordinates of each area you want as a zone.
+#
+# This file shows one example customer per scenario, each with multiple
+# cameras, to use as a template. A REAL single-customer deployment should
+# only contain that customer's cameras — delete/comment out the rest.
 # ─────────────────────────────────────────────────────────────────
 
-# Set to true to enable multi-camera mode
-# When false, the system runs in single-camera mode (backward compatible)
-multi_camera_enabled: false
+# Camera credentials use ${VAR_NAME} placeholders, substituted from
+# environment variables at load time — NOT stored in this file. Set them
+# in your .env / server environment, e.g.:
+#   CAM_2_USER=admin
+#   CAM_2_PASS=<real password>
+# This matches the same convention used for email/Twilio secrets — no
+# credentials of any kind live in checked-in config files.
+#
+multi_camera_enabled: true
 
 # Default camera to show when dashboard loads
 default_camera: cam_1
 
 cameras:
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # SCENARIO: Guard Monitoring — fixed A/B/C/D grid, no zone calibration needed
+  # ═══════════════════════════════════════════════════════════════════════
   cam_1:
     name: "Main Entrance"
     source: 0                    # Laptop webcam
     enabled: true
-    # Optional: override detection settings per camera
-    # person_confidence: 0.5
-    # face_scale: 0.5
+    profile: guard_monitoring
+    # No zones needed — guard_monitoring uses the fixed 2x2 grid.
 
   cam_2:
-    name: "Parking Lot"
-    source: "uploads/sample.mp4"  # Video file for testing
-    enabled: false                # Set to true when you have a source ready
-    # loop: true                  # Loop video files (default: true)
+    name: "USB Camera"
+    source: 1              # ← whatever index find_camera_index.py showed you
+    enabled: false
+    profile: guard_monitoring   # or whichever profile fits what you're testing
 
   cam_3:
-    name: "Back Gate"
-    source: "rtsp://admin:admin@192.168.1.100:554/stream1"
-    enabled: false
-
-  cam_4:
     name: "Server Room"
-    source: "rtsp://admin:admin@192.168.1.101:554/stream1"
+    source: "rtsp://${CAM_3_USER}:${CAM_3_PASS}@192.168.1.101:554/stream1"
     enabled: false
+    profile: guard_monitoring
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # SCENARIO: Bank Security — named zones, stricter weapon/fire thresholds
+  # (applied automatically at runtime via bank_security profile overrides)
+  # ═══════════════════════════════════════════════════════════════════════
+  cam_bank_lobby:
+    name: "Bank Branch #4 — Lobby"
+    source: "rtsp://${CAM_BANK_LOBBY_USER}:${CAM_BANK_LOBBY_PASS}@192.168.2.10:554/stream1"
+    enabled: false
+    profile: bank_security
+    zones:
+      - id: lobby
+        label: "Lobby"
+        polygon: [[0, 0], [640, 0], [640, 300], [0, 300]]
+      - id: teller_counter
+        label: "Teller Counter"
+        polygon: [[0, 300], [640, 300], [640, 480], [0, 480]]
+
+  cam_bank_vault:
+    name: "Bank Branch #4 — Vault Approach"
+    source: "rtsp://${CAM_BANK_VAULT_USER}:${CAM_BANK_VAULT_PASS}@192.168.2.11:554/stream1"
+    enabled: false
+    profile: bank_security
+    zones:
+      - id: vault_approach
+        label: "Vault Approach"
+        polygon: [[0, 0], [640, 0], [640, 480], [0, 480]]
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # SCENARIO: Retail Store — named zones, continuous loitering analytics
+  # ═══════════════════════════════════════════════════════════════════════
+  cam_retail_floor:
+    name: "Retail Store #12 — Main Floor"
+    source: "rtsp://${CAM_RETAIL_FLOOR_USER}:${CAM_RETAIL_FLOOR_PASS}@192.168.3.10:554/stream1"
+    enabled: false
+    profile: retail_analytics
+    zones:
+      - id: entrance
+        label: "Entrance"
+        polygon: [[0, 0], [200, 0], [200, 480], [0, 480]]
+      - id: checkout
+        label: "Checkout"
+        polygon: [[200, 0], [400, 0], [400, 240], [200, 240]]
+      - id: mens
+        label: "Men's Section"
+        polygon: [[400, 0], [640, 0], [640, 240], [400, 240]]
+      - id: womens
+        label: "Women's Section"
+        polygon: [[200, 240], [420, 240], [420, 480], [200, 480]]
+      - id: kids
+        label: "Kids' Section"
+        polygon: [[420, 240], [640, 240], [640, 480], [420, 480]]
+
+  cam_retail_entrance:
+    name: "Retail Store #12 — Front Door"
+    source: "rtsp://${CAM_RETAIL_ENTRANCE_USER}:${CAM_RETAIL_ENTRANCE_PASS}@192.168.3.11:554/stream1"
+    enabled: false
+    profile: retail_analytics
+    zones:
+      - id: front_door
+        label: "Front Door"
+        polygon: [[0, 0], [640, 0], [640, 480], [0, 480]]
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # SCENARIO: Warehouse Operations — named zones incl. one restricted area
+  # ═══════════════════════════════════════════════════════════════════════
+  cam_warehouse_dock:
+    name: "Warehouse #3 — Loading Bay"
+    source: "rtsp://${CAM_WAREHOUSE_DOCK_USER}:${CAM_WAREHOUSE_DOCK_PASS}@192.168.4.10:554/stream1"
+    enabled: false
+    profile: warehouse_ops
+    zones:
+      - id: loading_dock
+        label: "Loading Dock"
+        polygon: [[0, 0], [640, 0], [640, 300], [0, 300]]
+      - id: restricted
+        label: "Restricted Zone"
+        polygon: [[0, 300], [300, 300], [300, 480], [0, 480]]
+      - id: machinery
+        label: "Machinery Floor"
+        polygon: [[300, 300], [640, 300], [640, 480], [300, 480]]
+
+  cam_warehouse_storage:
+    name: "Warehouse #3 — Storage Area A"
+    source: "rtsp://${CAM_WAREHOUSE_STORAGE_USER}:${CAM_WAREHOUSE_STORAGE_PASS}@192.168.4.11:554/stream1"
+    enabled: false
+    profile: warehouse_ops
+    zones:
+      - id: storage_a
+        label: "Storage Area A"
+        polygon: [[0, 0], [640, 0], [640, 480], [0, 480]]

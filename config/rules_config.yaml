@@ -1,3 +1,17 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# NoviSentra — rules_config.yaml
+# Single global baseline. Scenario-specific behavior (bank/retail/warehouse)
+# comes from novisentra/profiles/ overriding a small subset of these values
+# at runtime per-camera — this file does NOT need duplicating per scenario.
+# See camera_config.yaml for which camera runs which profile.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Fallback profile for single-camera / not-yet-assigned deployments.
+# Multi-camera deployments set this per-camera in camera_config.yaml instead —
+# this value only matters when a camera's config doesn't specify one.
+active_profile: guard_monitoring   # guard_monitoring | bank_security | retail_analytics
+                                    # | warehouse_ops
+
 # ── Person Detection ──────────────────────────────────────────────
 person:
   min_height: 60
@@ -7,7 +21,7 @@ person:
 # ── Crowd ─────────────────────────────────────────────────────────
 crowd:
   threshold: 4
-  post_crowd_grace: 10.0
+  post_crowd_grace: 10
   post_crowd_loiter: 15.0
 
 # ── Unknown Person ────────────────────────────────────────────────
@@ -22,8 +36,8 @@ unknown:
 
 # ── Fire / Smoke ──────────────────────────────────────────────────
 fire:
-  min_confidence: 0.55
-  sustain_seconds: 6.0
+  min_confidence: 0.55       # bank_security overrides to 0.65 at runtime
+  sustain_seconds: 6
   min_consecutive: 3
   frame_interval: 20
   result_max_age: 8.0
@@ -31,32 +45,32 @@ fire:
 
 # ── Weapons ───────────────────────────────────────────────────────
 weapon:
-  confidence: 0.75
+  confidence: 0.75           # bank_security overrides to 0.82 at runtime
   draw_knife_bbox: true
 
 # ── Behavior (CLIP) ──────────────────────────────────────────────
 behavior:
   interval_frames: 50
-  idle_max_speed: 12.0
+  idle_max_speed: 12
   clip_thresholds:
     NORMAL: 0.25
-    SLEEPING: 0.75          # high threshold — only confirm when clearly sleeping
-    PHONE_USE: 0.50
-    IDLE: 0.50
+    SLEEPING: 0.85          # high threshold — only confirm when clearly sleeping
+    PHONE_USE: 0.5
+    IDLE: 0.5
     DISTRACTED_OTHER: 0.45
-    SMOKING: 0.70
+    SMOKING: 0.7
   confirm_ratios:
     SMOKING: 0.85
     SLEEPING: 0.95           # very strict — needs 9 of 10 readings consistently
-    PHONE_USE: 0.60
+    PHONE_USE: 0.6
     IDLE: 0.60
     DISTRACTED_OTHER: 0.55
   idle_use_clip: false
 
 # ── Loitering ─────────────────────────────────────────────────────
 loitering:
-  unknown_zone_time: 30
-  known_zone_time: 90
+  unknown_zone_time: 30      # retail_analytics overrides both to 600 at runtime
+  known_zone_time: 90        # (10 min — normal browsing shouldn't alert)
 
 # ── Fight / Violence ─────────────────────────────────────────────
 fight:
@@ -80,14 +94,28 @@ tracker:
   max_disappeared: 40
   max_distance: 300
 
-# ── Email Alerts ─────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+# Email Alerts — Brevo (production transport, 300/day free forever —
+# switched from SMTP because Gmail SMTP breaks on cloud servers, and from
+# Resend because Resend's 100/day cap is too low for multi-camera deployments)
+# ═══════════════════════════════════════════════════════════════════════════
 email:
   enabled: true
+  transport: brevo             # "brevo" (production) | "smtp" (dev/fallback only)
+
+  brevo:
+    from_address: "alerts@yourdomain.com"   # MUST be on a domain verified in Brevo
+    from_name: "NoviSentra"
+    # API key comes from env var, never store it in this file:
+    #   export BREVO_API_KEY=xkeysib-xxxxxxxxxxxxxxxxxxxx
+
+  # Kept only for local/dev testing — do NOT use in production.
   smtp_server: smtp.gmail.com
   smtp_port: 587
-  sender: ""               # sender's email id
-  password: ""             # Gmail App Password (NOT your real password)
-  recipients: []           # receiver's email id
+  sender: ""               # sender's email id (smtp fallback only)
+  password: ""             # Gmail App Password (smtp fallback only)
+
+  recipients: []            # receiver's email id(s)
   alert_types:
   - Weapon Detected
   - Unattended Weapon Detected
@@ -100,24 +128,34 @@ email:
   - Camera Tamper
   cooldown: 200
 
-# ── WhatsApp Alerts ──────────────────────────────────────────
-# Sends WhatsApp messages for high-severity events.
-# Transports: stub (logs only) | pywhatkit | twilio | meta
-# See whatsapp_alerter.py for full documentation.
-#
-# Quick start with pywhatkit (no account needed):
-#   pip install pywhatkit
-#   Set transport: pywhatkit, add recipients, set enabled: true
-#
+# ═══════════════════════════════════════════════════════════════════════════
+# WhatsApp Alerts — Twilio (production transport — Chrome automation breaks
+# on any headless server; also note WhatsApp Business API requires a
+# pre-approved message template for any business-initiated message, hence
+# the content_sid field below and per-alert immediate sends instead of
+# batching — see whatsapp_alerter.py module docstring for full setup steps)
+# ═══════════════════════════════════════════════════════════════════════════
 whatsapp:
-  enabled: true           # Set to true to enable WhatsApp alerts
-  transport: chrome        # chrome | twilio | meta | stub
-  recipient_number: ""     # Recipient number in E.164 format: "+919876543210"
-                           # (quotes required — unquoted numbers break YAML)
-  batch_size: 5            # Send after this many alerts accumulate
-  batch_timeout: 300       # OR after this many seconds since first alert (whichever first)
-  page_load_wait: 19       # Seconds to wait for WhatsApp Web to load (tune if needed)
-  chrome_profile: Default  # Chrome profile (Default, Profile 1, etc.)
+  enabled: false
+  transport: twilio         # "twilio" (production) | "chrome" (dev/local only) | "stub"
+  recipient_number: ""      # Recipient number in E.164 format: "+919876543210"
+                            # (quotes required — unquoted numbers break YAML)
+
+  twilio:
+    from_number: "whatsapp:+14155238886"    # your Twilio WhatsApp sender
+    content_sid: ""          # approved template SID, starts with "HX..."
+    # Account credentials come from env vars, never store them here:
+    #   export TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+    #   export TWILIO_AUTH_TOKEN=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+  # Chrome transport settings — DEV/LOCAL ONLY, ignored by transport=twilio.
+  # Will not work on a headless server (needs a screen + logged-in
+  # WhatsApp Web session).
+  batch_size: 5             # chrome transport only — flush after N alerts
+  batch_timeout: 300        # reserved / not currently enforced by either transport
+  page_load_wait: 19
+  chrome_profile: Default
+
   alert_types:
   - Weapon Detected
   - Unattended Weapon Detected
@@ -128,12 +166,3 @@ whatsapp:
   - Guard Missing
   - Guard Smoking
   - Camera Tamper
-twilio:
-  account_sid: ""
-  auth_token: ""
-  from_number: "whatsapp:+91__________"
-
-# Meta Business API config (only needed if transport: meta)
-meta:
-  access_token: ""
-  phone_number_id: ""

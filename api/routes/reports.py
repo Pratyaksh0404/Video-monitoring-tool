@@ -13,7 +13,8 @@ from api.middleware.auth import require_api_key
 reports_bp = Blueprint("reports_v1", __name__)
 
 
-def register(app, send_session_report_fn, generate_report_fn, streamer, alert_log, alert_log_lock):
+def register(app, send_session_report_fn, generate_report_fn, streamer, alert_log,
+            alert_log_lock, get_session_start_fn=None, dominant_profile_fn=None):
 
     @reports_bp.route("/api/v1/reports/generate", methods=["GET"])
     @require_api_key
@@ -31,10 +32,21 @@ def register(app, send_session_report_fn, generate_report_fn, streamer, alert_lo
             alerts = list(alert_log)
 
         stats = dict(streamer.stats)
-        html  = generate_report_fn(
+
+        # Previously hardcoded "time.time() - 3600" — an approximation
+        # never actually connected to the real session start, so every
+        # report through this endpoint showed a fabricated ~1hr duration
+        # regardless of the real session length. Now uses the live
+        # session_start value from flask_app.py, same source of truth
+        # every other report path uses.
+        session_start = get_session_start_fn() if get_session_start_fn else time.time() - 3600
+        profile_id = dominant_profile_fn(alerts) if dominant_profile_fn else "guard_monitoring"
+
+        html = generate_report_fn(
             alert_log=alerts,
             stats=stats,
-            session_start=time.time() - 3600,   # approximate
+            session_start=session_start,
+            profile_id=profile_id,
         )
         return Response(html, mimetype="text/html")
 

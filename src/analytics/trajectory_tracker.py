@@ -4,9 +4,22 @@ import time
 
 class TrajectoryTracker:
 
-    def __init__(self, roi=None, grid_size=2):
+    def __init__(self, roi=None, grid_size=2, zone_mode="grid", zones=None):
+        """
+        zone_mode: "grid"  — legacy behavior, unchanged. Divides roi into
+                             a grid_size × grid_size grid, labeled A/B/C/D.
+                             This is what guard_monitoring uses.
+                   "named" — arbitrary named zones with polygons, e.g.
+                             [{"id": "kitchen", "polygon": [(x1,y1), ...]}, ...]
+                             Used by retail/warehouse/bank profiles. If no
+                             zones are configured yet (not calibrated for
+                             this camera), get_current_zone/get_path simply
+                             return None/empty — never crashes.
+        """
         self.roi       = roi
         self.grid_size = grid_size
+        self.zone_mode = zone_mode
+        self.zones     = zones or []   # list of {"id": str, "polygon": [(x,y), ...]}
 
         self.paths            = defaultdict(list)
         self.last_zone        = {}
@@ -75,7 +88,15 @@ class TrajectoryTracker:
             return ""
         return " -> ".join(path)
 
+    # ── Zone resolution ───────────────────────────────────────────────────────
+
     def _get_zone(self, x, y):
+        if self.zone_mode == "named":
+            return self._get_named_zone(x, y)
+        return self._get_grid_zone(x, y)
+
+    def _get_grid_zone(self, x, y):
+        """Original fixed-grid logic — unchanged, still the default."""
         if not self.roi:
             return None
 
@@ -96,3 +117,35 @@ class TrajectoryTracker:
         if index < len(zones):
             return zones[index]
         return None
+
+    def _get_named_zone(self, x, y):
+        """
+        Point-in-polygon zone lookup for retail/warehouse/bank profiles.
+        Returns None if no zones are configured yet (camera not calibrated)
+        or if the point falls outside every defined zone polygon —
+        never raises, so an uncalibrated deployment just doesn't get zone
+        tracking rather than crashing.
+        """
+        if not self.zones:
+            return None
+        for zone in self.zones:
+            polygon = zone.get("polygon")
+            if polygon and self._point_in_polygon(x, y, polygon):
+                return zone["id"]
+        return None
+
+    @staticmethod
+    def _point_in_polygon(x, y, polygon):
+        """Standard ray-casting point-in-polygon test. No external deps."""
+        n = len(polygon)
+        inside = False
+        px, py = polygon[0]
+        for i in range(1, n + 1):
+            qx, qy = polygon[i % n]
+            if y > min(py, qy) and y <= max(py, qy) and x <= max(px, qx):
+                if py != qy:
+                    xinters = (y - py) * (qx - px) / (qy - py) + px
+                if px == qx or x <= xinters:
+                    inside = not inside
+            px, py = qx, qy
+        return inside
