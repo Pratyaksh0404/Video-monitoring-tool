@@ -25,3 +25,6 @@ src/data
 src/snapshots
 src/logs
 PyWhatKit_DB.txt
+src/logs/system.log
+config/webhooks.json
+.env
