@@ -117,6 +117,17 @@ class EmailAlerter:
                 return False
         return True
 
+    def reset_cooldowns(self) -> None:
+        """
+        Reset all per-alert-type email cooldowns. Called on profile switch so
+        each profile gets a fresh cooldown window — prevents cross-profile
+        cooldown bleed where e.g. a Camera Tamper fired in guard_monitoring
+        blocks the same alert type from emailing for 200 seconds in
+        bank_security, even though it's a completely different operational context.
+        """
+        with self._lock:
+            self._last_sent.clear()
+
     def set_snapshot_manager(self, snap_mgr):
         """Wire in the SnapshotManager so emails can attach burst snapshots."""
         self._snap_mgr = snap_mgr

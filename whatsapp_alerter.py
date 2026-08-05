@@ -140,9 +140,9 @@ class WhatsAppAlerter:
                         "TWILIO_AUTH_TOKEN env vars not set.")
             self._enabled = False
             return
-        if not self._twilio_from or not self._twilio_content_sid:
-            _log.warning("transport=twilio but twilio.from_number or "
-                        "twilio.content_sid not configured in rules_config.yaml.")
+        if not self._twilio_from:
+            _log.warning("transport=twilio but twilio.from_number not configured "
+                        "in rules_config.yaml.")
             self._enabled = False
             return
         try:
@@ -181,13 +181,6 @@ class WhatsAppAlerter:
         if not self._enabled:
             return
         if not self._matches(alert.get("type", "")):
-            return
-        # Same exclusion as EmailAlerter.should_send() (2026-07): never
-        # notify on "Unknown Person ..." regardless of severity/matched
-        # type — kept here too so enabling WhatsApp later doesn't
-        # silently reintroduce the noise this was explicitly turned off
-        # for.
-        if alert.get("type", "").lower().startswith("unknown person"):
             return
 
         if self._transport in ("twilio", "stub"):
@@ -334,36 +327,98 @@ class WhatsAppAlerter:
         guard_id   = alert.get("guard_id", "—")
         zone       = alert.get("zone", "—")
         timestamp  = alert.get("timestamp", "")
+        severity   = alert.get("severity", "HIGH")
+        camera     = alert.get("camera_id", "")
 
         if self._transport == "stub":
-            _log.info(f"[WA STUB] Would send template alert: {alert_type} "
-                      f"| {guard_id} | Zone {zone} | {timestamp}")
+            _log.info(
+                f"[WA STUB] Would send: {alert_type} | {guard_id} | "
+                f"Zone {zone} | {severity.upper()} | {timestamp}"
+            )
             return
 
         if self._transport == "twilio":
-            self._send_twilio_template(alert_type, guard_id, zone, timestamp)
+            self._send_twilio_template(alert_type, guard_id, zone,
+                                       timestamp, severity, camera)
 
-    def _send_twilio_template(self, alert_type: str, guard_id: str, zone: str, timestamp: str):
+    def _send_twilio_template(self, alert_type: str, guard_id: str, zone: str,
+                               timestamp: str, severity: str = "HIGH", camera: str = ""):
         """
-        Send one alert as an approved WhatsApp Content Template message.
-        Template must already exist and be approved (see module docstring)
-        with 4 variable slots: {{1}} alert_type, {{2}} guard_id,
-        {{3}} zone, {{4}} timestamp.
+        Send one alert via Twilio WhatsApp.
+
+        Two modes — chosen automatically based on whether content_sid is set:
+
+        SANDBOX / TESTING (content_sid is empty):
+          Sends a free-form text message. Works immediately with the Twilio
+          sandbox number (+14155238886) — no template approval needed.
+          The recipient must have joined the sandbox first by sending the
+          join keyword to the sandbox number.
+
+        PRODUCTION (content_sid is set to "HX..."):
+          Sends via a Meta-approved Content Template. Required once you
+          switch from the sandbox to your real WhatsApp Business number.
+          Template must be created in Twilio Console → Content Editor and
+          approved by Meta before this works.
+
+        Both modes send immediately, fully behind the scenes — no browser,
+        no screen, no manual intervention of any kind.
         """
         try:
-            content_variables = json.dumps({
-                "1": alert_type,
-                "2": guard_id,
-                "3": zone,
-                "4": timestamp,
-            })
-            message = self._twilio_client.messages.create(
-                from_=self._twilio_from,
-                content_sid=self._twilio_content_sid,
-                content_variables=content_variables,
-                to=f"whatsapp:{self._recipient}",
+            to_number = f"whatsapp:{self._recipient}"
+
+            if self._twilio_content_sid:
+                # ── Production path: approved Meta template ──────────────────
+                # Template slots: {{1}} alert_type, {{2}} person, {{3}} zone,
+                # {{4}} severity, {{5}} time. Matches the template you create
+                # in Twilio Console → Content Editor.
+                content_variables = json.dumps({
+                    "1": alert_type,
+                    "2": guard_id if guard_id not in ("Camera", "Post", "—", "") else "System",
+                    "3": zone if zone not in ("—", "-", "") else "—",
+                    "4": severity.upper(),
+                    "5": timestamp,
+                })
+                message = self._twilio_client.messages.create(
+                    from_=self._twilio_from,
+                    content_sid=self._twilio_content_sid,
+                    content_variables=content_variables,
+                    to=to_number,
+                )
+            else:
+                # ── Sandbox / testing path: free-form text ───────────────────
+                # Works with sandbox number only. Switch to content_sid path
+                # when you move to your WhatsApp Business number.
+                person_line = (
+                    f"\n👤 *Person:* {guard_id}"
+                    if guard_id not in ("Camera", "Post", "—", "", None) else ""
+                )
+                zone_line = (
+                    f"\n📍 *Zone:* {zone}"
+                    if zone not in ("—", "-", "", None) else ""
+                )
+                cam_line = f"\n📷 *Camera:* {camera}" if camera else ""
+
+                body = (
+                    f"⚠️ *NoviSentra Security Alert*\n\n"
+                    f"🚨 *Alert:* {alert_type}"
+                    f"{person_line}"
+                    f"{zone_line}"
+                    f"{cam_line}\n"
+                    f"🔴 *Severity:* {severity.upper()}\n"
+                    f"🕐 *Time:* {timestamp}\n\n"
+                    f"Check the NoviSentra dashboard for live video."
+                )
+                message = self._twilio_client.messages.create(
+                    from_=self._twilio_from,
+                    body=body,
+                    to=to_number,
+                )
+
+            _log.info(
+                f"[WhatsApp ✓] Sent: {alert_type} | {guard_id} | "
+                f"Zone {zone} | {timestamp} (sid={message.sid[:12]}...)"
             )
-            _log.info(f"WhatsApp sent via Twilio: {alert_type} (sid={message.sid[:12]}...)")
+
         except Exception as e:
             _log.error(f"Twilio WhatsApp send failed: {type(e).__name__}: {e}")
 

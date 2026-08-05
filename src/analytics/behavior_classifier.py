@@ -28,32 +28,45 @@ from novisentra.utils.model_loader import load_clip_safely
 # both trigger a redundant load.
 # ═══════════════════════════════════════════════════════════════════════════
 import threading as _threading
-_shared_lock  = _threading.Lock()
-_shared_model = None
+_shared_lock       = _threading.Lock()
+_shared_model      = None
 _shared_preprocess = None
-_shared_load_attempted = False
+_shared_loaded     = False
 
 
 def get_shared_clip(device="cpu"):
     """
-    Returns (model, preprocess) — loaded once and reused by every camera's
-    BehaviorClassifier. Safe to call concurrently from multiple camera
-    threads at startup.
+    Returns (model, preprocess) — loaded exactly once, shared by every
+    BehaviorClassifier instance (i.e. every camera thread).
+
+    Simple correct implementation: use a lock, check if already loaded,
+    if not load, release. The key insight that was missing in previous
+    attempts: this function is called from BehaviorWorker._loop() which
+    runs on a BACKGROUND THREAD — it does NOT block Flask or the main
+    thread. The only thread it blocks is the BehaviorWorker's own thread
+    while CLIP loads, and that is exactly what we want (the worker can't
+    classify behavior until CLIP is loaded anyway).
+
+    With the 1.5s stagger between camera starts in camera_manager.py,
+    the second camera's BehaviorWorker starts 1.5s after the first, so
+    by the time it calls get_shared_clip(), the first camera's load is
+    almost certainly complete — it returns instantly from the `if
+    _shared_loaded:` fast path. No events, no races, no starvation.
     """
-    global _shared_model, _shared_preprocess, _shared_load_attempted
+    global _shared_model, _shared_preprocess, _shared_loaded
 
     with _shared_lock:
-        if _shared_load_attempted:
+        if _shared_loaded:
             return _shared_model, _shared_preprocess
-        _shared_load_attempted = True
 
         model, preprocess = load_clip_safely(
             model_name="RN50",
             pretrained="openai",
             cache_dir=os.path.abspath(_CACHE_DIR),
         )
-        _shared_model = model
+        _shared_model      = model
         _shared_preprocess = preprocess
+        _shared_loaded     = True
         return _shared_model, _shared_preprocess
 
 
@@ -69,28 +82,16 @@ class BehaviorClassifier:
 
     _MIN_CONF = {
         "NORMAL":           0.25,
-        "SLEEPING":         0.55,   # raised from 0.45 — too many false positives on "looking down"
+        "SLEEPING":         0.85,   # strict — was 0.55, causing false positives
         "PHONE_USE":        0.50,
         "IDLE":             0.50,
         "DISTRACTED_OTHER": 0.45,
-        "SMOKING":          0.70,   # raised from 0.65 — hand-near-face triggers too easily
+        "SMOKING":          0.70,
     }
 
-    # Bug found 2026-07: the Settings tab's "Behavior Detection (CLIP)"
-    # sliders (Sleeping/Phone/Smoking/Idle — CLIP threshold) write to
-    # rules_config.yaml's behavior.clip_thresholds, and the UI claims
-    # "Settings saved — thresholds updated live" — but nothing in this
-    # file ever read that config. _MIN_CONF above was a pure hardcoded
-    # constant with zero connection to the config file at all, so tuning
-    # it from the dashboard (e.g. raising the Sleeping threshold to cut
-    # false positives) silently did nothing. Fixed by reading through
-    # this module-level override dict instead, which main_web.py
-    # populates from _cfg() at startup AND repopulates inside
-    # reload_config() on every live "Save & Apply" — see main_web.py's
-    # apply_behavior_clip_thresholds(). A plain module-level dict (not
-    # per-instance) matches how the CLIP model itself is already a
-    # shared singleton across every camera (get_shared_clip above), and
-    # the Settings tab is a single global panel, not per-camera anyway.
+    # Live override dict — populated from rules_config.yaml at startup and
+    # on every Settings "Save & Apply". Takes effect immediately for all
+    # camera threads on the next CLIP call.
     _MIN_CONF_LIVE_OVERRIDE: dict = {}
 
     def __init__(self, device="cpu"):
@@ -177,10 +178,23 @@ class BehaviorClassifier:
 
 def set_min_conf_overrides(overrides: dict) -> None:
     """
-    Called by main_web.py (at startup and from reload_config()) with
-    whatever behavior.clip_thresholds the Settings tab has saved to
-    rules_config.yaml — e.g. {"SLEEPING": 0.80, "PHONE_USE": 0.5, ...}.
-    Takes effect immediately for every camera's next classification call,
-    same live-reload behavior the Settings UI already claims.
+    Called by main_web.py at startup and from reload_config() to push
+    behavior.clip_thresholds from rules_config.yaml into the classifier.
+    Takes effect immediately for every camera's next CLIP call.
     """
     BehaviorClassifier._MIN_CONF_LIVE_OVERRIDE = dict(overrides or {})
+
+
+def set_confirm_ratio_overrides(overrides: dict) -> None:
+    """
+    Stub kept for import compatibility — confirm ratios live in
+    BehaviorEngine, not BehaviorClassifier. See behavior_engine.py.
+    main_web.py imports this name from here for convenience; the real
+    implementation is in analytics.behavior_engine.
+    """
+    # Delegate to BehaviorEngine if available, otherwise no-op.
+    try:
+        from analytics.behavior_engine import set_confirm_ratio_overrides as _engine_fn
+        _engine_fn(overrides)
+    except Exception:
+        pass

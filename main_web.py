@@ -16,8 +16,7 @@ from detection.person_detector import PersonDetector
 from detection.tracker import CentroidTracker
 from analytics.presence import PresenceMonitor
 from analytics.inactivity import InactivityMonitor
-from analytics.behavior_engine import BehaviorEngine, set_confirm_ratio_overrides
-from analytics.behavior_classifier import set_min_conf_overrides
+from analytics.behavior_engine import BehaviorEngine
 from analytics.trajectory_tracker import TrajectoryTracker
 from analytics.loitering_detector import LoiteringDetector
 from analytics.fight_detector import FightDetector
@@ -83,24 +82,12 @@ DRAW_KNIFE_BBOX      = _cfg("weapon", "draw_knife_bbox", True)
 TRACKER_MAX_DISAP    = _cfg("tracker", "max_disappeared", 40)
 TRACKER_MAX_DIST     = _cfg("tracker", "max_distance", 300)
 
-
-def _apply_behavior_clip_config():
-    """
-    Push behavior.clip_thresholds / behavior.confirm_ratios from
-    rules_config.yaml into BehaviorClassifier / BehaviorEngine's live
-    override dicts. Bug fix 2026-07: the Settings tab's CLIP-threshold
-    and confirm-ratio sliders wrote to config but nothing ever read it
-    back — see the module docstrings in behavior_classifier.py and
-    behavior_engine.py for the full story. Called once at import time
-    below and again from reload_config() so a live Settings "Save &
-    Apply" actually reaches the classifier/engine immediately, matching
-    what the dashboard already claims happens.
-    """
-    set_min_conf_overrides(_cfg("behavior", "clip_thresholds", {}) or {})
-    set_confirm_ratio_overrides(_cfg("behavior", "confirm_ratios", {}) or {})
-
-
-_apply_behavior_clip_config()
+# Multi-camera resource control — downscale frames before any detector
+# sees them. 1920x1080 from a DVR is ~9x more expensive than 640x360
+# for YOLO/CLIP/face_recognition. All detectors work fine at 640px.
+# Snapshots and video feed use the original full-res frame.
+PIPELINE_MAX_WIDTH   = _cfg("pipeline", "max_width",    640)
+PIPELINE_SKIP_FRAMES = _cfg("pipeline", "skip_frames",  2)
 
 
 def reload_config():
@@ -122,6 +109,7 @@ def reload_config():
     global POST_CROWD_GRACE, POST_CROWD_LOITER
     global DRAW_KNIFE_BBOX
     global TRACKER_MAX_DISAP, TRACKER_MAX_DIST
+    global PIPELINE_MAX_WIDTH, PIPELINE_SKIP_FRAMES
 
     _CFG = _load_config()
 
@@ -148,8 +136,8 @@ def reload_config():
     DRAW_KNIFE_BBOX      = _cfg("weapon",   "draw_knife_bbox",   True)
     TRACKER_MAX_DISAP    = _cfg("tracker",  "max_disappeared",   40)
     TRACKER_MAX_DIST     = _cfg("tracker",  "max_distance",      300)
-
-    _apply_behavior_clip_config()
+    PIPELINE_MAX_WIDTH   = _cfg("pipeline", "max_width",         640)
+    PIPELINE_SKIP_FRAMES = _cfg("pipeline", "skip_frames",       2)
 
     log.info("Config reloaded — thresholds updated live.")
 
@@ -173,11 +161,71 @@ def box_centroid(box):
     return (int((box[0]+box[2])/2), int((box[1]+box[3])/2))
 
 
+_face_enc_lock   = threading.Lock()
+_face_enc_cache  = None   # (encodings_list, names_list) — set once, shared
+
+
 def load_enrolled_faces(faces_dir):
-    known_encodings, known_names = [], []
+    """
+    Load enrolled face encodings — cached to disk so dlib encoding runs
+    only when faces actually change, not on every startup. Also shared
+    in memory so multiple camera threads don't each re-encode.
+
+    Cache file: enrolled_faces/.encoding_cache.pkl
+    Invalidation: if any image in enrolled_faces/ is newer than the
+    cache file, the cache is regenerated automatically.
+    """
+    global _face_enc_cache
+
+    # Fast path: already loaded this run — return the shared copy.
+    with _face_enc_lock:
+        if _face_enc_cache is not None:
+            encs, names = _face_enc_cache
+            log.info(f"Face recognizer: {len(encs)} encodings for "
+                     f"{len(set(names))} identities (shared): {sorted(set(names))}")
+            return encs, names
+
     if not os.path.exists(faces_dir):
         log.warning(f"enrolled_faces dir not found: {faces_dir}")
-        return known_encodings, known_names
+        with _face_enc_lock:
+            _face_enc_cache = ([], [])
+        return [], []
+
+    cache_path = os.path.join(faces_dir, ".encoding_cache.pkl")
+
+    # Check if any image is newer than the cache.
+    cache_valid = False
+    if os.path.exists(cache_path):
+        cache_mtime = os.path.getmtime(cache_path)
+        cache_valid = True
+        for root, _, files in os.walk(faces_dir):
+            for f in files:
+                if f.startswith("."):
+                    continue
+                fpath = os.path.join(root, f)
+                if os.path.getmtime(fpath) > cache_mtime:
+                    cache_valid = False
+                    break
+            if not cache_valid:
+                break
+
+    if cache_valid:
+        try:
+            import pickle
+            with open(cache_path, "rb") as fh:
+                known_encodings, known_names = pickle.load(fh)
+            log.info(f"Face recognizer: {len(known_encodings)} encodings for "
+                     f"{len(set(known_names))} identities (from cache): "
+                     f"{sorted(set(known_names))}")
+            with _face_enc_lock:
+                _face_enc_cache = (known_encodings, known_names)
+            return known_encodings, known_names
+        except Exception as e:
+            log.warning(f"Face encoding cache corrupt, regenerating: {e}")
+
+    # Cache miss — encode from scratch (slow, ~5min for 39 images on CPU).
+    log.info("Face recognizer: encoding enrolled faces (first run or new faces added) ...")
+    known_encodings, known_names = [], []
     for person_name in os.listdir(faces_dir):
         person_dir = os.path.join(faces_dir, person_name)
         if not os.path.isdir(person_dir):
@@ -192,8 +240,20 @@ def load_enrolled_faces(faces_dir):
                     known_names.append(person_name)
             except Exception:
                 pass
+
+    # Save cache so next startup is instant.
+    try:
+        import pickle
+        with open(cache_path, "wb") as fh:
+            pickle.dump((known_encodings, known_names), fh)
+        log.info("Face encoding cache saved.")
+    except Exception as e:
+        log.warning(f"Could not save face encoding cache: {e}")
+
     log.info(f"Face recognizer: {len(known_encodings)} encodings for "
-          f"{len(set(known_names))} identities: {sorted(set(known_names))}")
+             f"{len(set(known_names))} identities: {sorted(set(known_names))}")
+    with _face_enc_lock:
+        _face_enc_cache = (known_encodings, known_names)
     return known_encodings, known_names
 
 
@@ -483,9 +543,34 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
             if frame is None:
                 break
 
+            # Frame skip — process every Nth frame to reduce CPU load.
+            # Do NOT push skipped frames to the streamer — pushing a raw
+            # unannotated frame every other frame means the viewer sees
+            # alternating annotated/raw frames, making boxes flicker and
+            # appear invisible at low FPS. The annotated frame pushed at
+            # the END of this loop is enough for smooth display at the
+            # effective pipeline FPS.
+            if PIPELINE_SKIP_FRAMES > 1 and frame_count % PIPELINE_SKIP_FRAMES != 0:
+                continue
+
             if frame_count < warmup_frames:
                 effective_streamer.push_frame(frame)
                 continue
+
+            # Keep the original full-res frame for snapshots and video feed.
+            # All detectors (YOLO/CLIP/face_recognition) run on the
+            # downscaled version — they work equally well at 640px and run
+            # ~9x faster than on 1920x1080 from the DVR.
+            display_frame = frame
+            if PIPELINE_MAX_WIDTH > 0:
+                h, w = frame.shape[:2]
+                if w > PIPELINE_MAX_WIDTH:
+                    scale = PIPELINE_MAX_WIDTH / w
+                    frame = cv2.resize(
+                        frame,
+                        (PIPELINE_MAX_WIDTH, int(h * scale)),
+                        interpolation=cv2.INTER_LINEAR,
+                    )
 
             if post_area is None:
                 h, w = frame.shape[:2]
@@ -503,7 +588,7 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
             if _cap("camera_tamper"):
                 tamper_event = camera_tamper.update(frame)
                 if tamper_event:
-                    snap_mgr.save(frame, f"Camera Tamper: {tamper_event}", "Camera", "—")
+                    snap_mgr.save(display_frame, f"Camera Tamper: {tamper_event}", "Camera", "—")
                     alert_manager.send_alert(
                         f"Camera Tamper: {tamper_event}", "Camera", zone="—")
 
@@ -571,7 +656,7 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
             # ── 1. Crowd ──────────────────────────────────────────────────────
             if _cap("crowd_detection") and is_crowd:
                 if now - last_alert_time.get("crowd", 0) > ALERT_COOLDOWN:
-                    snap_mgr.save(frame, "Crowd Detected", "Camera", "—")
+                    snap_mgr.save(display_frame, "Crowd Detected", "Camera", "—")
                     alert_manager.send_alert("Crowd Detected", "Camera", zone="—")
                     last_alert_time["crowd"] = now
                     active_violations.add("Crowd")
@@ -595,7 +680,7 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                     if len(fire_hits) >= FIRE_MIN_CONSECUTIVE:
                         if now - last_alert_time.get("fire", 0) > ALERT_COOLDOWN:
                             t = fire_res.get("threat") or "Fire"
-                            snap_mgr.save(frame, f"Fire Detected: {t}", "Camera", "—")
+                            snap_mgr.save(display_frame, f"Fire Detected: {t}", "Camera", "—")
                             alert_manager.send_alert(
                                 f"Fire Detected: {t}", "Camera", zone="—")
                             last_alert_time["fire"] = now
@@ -640,19 +725,10 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                         if not tracked_objects:
                             key = f"weapon:frame:{threat}"
                             if now - last_alert_time.get(key, 0) > ALERT_COOLDOWN:
-                                # Reordered 2026-07: snap_mgr.save() now
-                                # called BEFORE send_alert(), matching the
-                                # pattern used everywhere else (e.g. the
-                                # send_alert() closure above) — gives the
-                                # async burst-write thread the maximum
-                                # possible head start before
-                                # email_alerter's polling thread starts
-                                # looking for files, instead of starting
-                                # the poll first and the burst second.
-                                snap_mgr.save(frame, f"Unattended Weapon Detected: {threat}", "Camera", "—")
                                 alert_manager.send_alert(
                                     f"Unattended Weapon Detected: {threat}",
                                     "Camera", zone="—")
+                                snap_mgr.save(display_frame, f"Unattended Weapon Detected: {threat}", "Camera", "—")
                                 last_alert_time[key] = now
                                 active_violations.add("Weapon")
                         else:
@@ -665,9 +741,9 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                                 gid = last_seen_guard_name if last_seen_guard_name != "Post" else "Camera"
                                 key = f"weapon:fullframe:{threat}"
                                 if now - last_alert_time.get(key, 0) > ALERT_COOLDOWN:
-                                    snap_mgr.save(frame, f"Weapon Detected: {threat}", gid, "—")
                                     alert_manager.send_alert(
                                         f"Weapon Detected: {threat}", gid, zone="—")
+                                    snap_mgr.save(display_frame, f"Weapon Detected: {threat}", gid, "—")
                                     last_alert_time[key] = now
                                     active_violations.add("Weapon")
 
@@ -698,12 +774,7 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                             gid = f"{name1} & {name2}"
 
                         zone1 = zone_detector.get_current_zone(id1) or "—"
-                        # Bug found 2026-07: this never called
-                        # snap_mgr.save() at all — same class of bug as
-                        # Guard Idle above. "Fight / Violence Detected"
-                        # and "Guard Under Attack" are both HIGH severity
-                        # and never had a screenshot by construction.
-                        snap_mgr.save(frame, msg, gid, zone1)
+                        snap_mgr.save(display_frame, msg, gid, zone1)
                         alert_manager.send_alert(msg, gid, zone=zone1)
                         last_alert_time[pair_key] = now
                         active_violations.add("Fight")
@@ -874,24 +945,43 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
 
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
 
-                label_text = f"{alert_name} | {final_state}"
-                if anomaly_label != "NORMAL":
-                    label_text += f" | {anomaly_threat or anomaly_label}"
+                # Build clean label: name + behavior state
+                name_part  = alert_name
+                state_part = ""
+                if "CONFIRMED_SLEEPING" in final_state:
+                    state_part = "SLEEPING"
+                elif "CONFIRMED_PHONE_USE" in final_state:
+                    state_part = "PHONE"
+                elif "CONFIRMED_SMOKING" in final_state:
+                    state_part = "SMOKING"
+                elif "CONFIRMED_IDLE" in final_state:
+                    state_part = "IDLE"
+                elif anomaly_label == "WEAPON":
+                    state_part = f"WEAPON: {anomaly_threat or ''}"
+                elif anomaly_label not in ("NORMAL", ""):
+                    state_part = anomaly_label
 
+                label_text = f"{name_part}  {state_part}".strip()
+
+                # Filled background behind label so it's readable on any background
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                (lw, lh), _ = cv2.getTextSize(label_text, font, 0.55, 2)
+                ly = max(y1 - 6, lh + 4)
+                cv2.rectangle(frame, (x1, ly - lh - 4), (x1 + lw + 4, ly + 2), color, -1)
                 cv2.putText(frame, label_text,
-                            (x1, max(y1-8, 12)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                            (x1 + 2, ly),
+                            font, 0.55, (0, 0, 0), 2, cv2.LINE_AA)
+                cv2.putText(frame, label_text,
+                            (x1 + 2, ly),
+                            font, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+
                 if display_zone and display_zone != "?":
                     dwell_secs_now = round(now - identity_first_seen.get(alert_name, now))
                     dwell_str = (f"{dwell_secs_now//60}m{dwell_secs_now%60:02d}s"
                                  if dwell_secs_now >= 60 else f"{dwell_secs_now}s")
                     cv2.putText(frame, f"Zone:{display_zone}  {dwell_str}",
-                                (x1, y1+22),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255,255,0), 1)
-
-                for (ft, fr, fb, fl, fname) in face_results:
-                    fc = (0,255,0) if fname != "UNKNOWN" else (0,0,255)
-                    cv2.rectangle(frame, (fl,ft), (fr,fb), fc, 1)
+                                (x1, y1 + 22),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 0), 1)
 
                 # ── Per-person alerts ─────────────────────────────────────────
                 now = time.time()
@@ -899,7 +989,7 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                 def send_alert(key, msg,
                                _gid=alert_name, _zone=display_zone, _t=now):
                     if _t - last_alert_time.get(key, 0) > ALERT_COOLDOWN:
-                        snap_mgr.save(frame, msg, _gid, _zone)
+                        snap_mgr.save(display_frame, msg, _gid, _zone)
                         alert_manager.send_alert(msg, _gid, zone=_zone)
                         last_alert_time[key] = _t
                         active_violations.add(msg)
@@ -926,18 +1016,7 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                         c["idle_frames"] += 1
                         idle_key = f"idle:{guard_id}"
                         if now - last_alert_time.get(idle_key, 0) > IDLE_COOLDOWN:
-                            # Bug found 2026-07: unlike Sleeping/Phone/
-                            # Smoking (which go through the shared
-                            # send_alert() closure above, which always
-                            # calls snap_mgr.save() first), this block
-                            # called alert_manager.send_alert() directly
-                            # and never called snap_mgr.save() at all —
-                            # "Guard Idle" could never have a screenshot
-                            # attached, 100% of the time, by construction.
-                            # Matches the exact logged pattern (every
-                            # single Guard/Staff Idle alert showed "No
-                            # snapshots found", with zero exceptions).
-                            snap_mgr.save(frame, "Guard Idle", alert_name, display_zone)
+                            snap_mgr.save(display_frame, "Guard Idle", alert_name, display_zone)
                             alert_manager.send_alert("Guard Idle", alert_name,
                                                      zone=display_zone)
                             last_alert_time[idle_key] = now
@@ -996,11 +1075,32 @@ def run(source=0, source_label="Camera 0", beh_worker=None,
                         send_alert(f"weapon:{alert_name}:{anomaly_threat}",
                                    f"Weapon Detected: {anomaly_threat}")
 
+            # ── Face boxes (drawn once per frame, not per tracked person) ────
+            # Drawing inside the per-person loop caused each face box to be
+            # redrawn N times (once per tracked person), which: (a) causes
+            # visible flicker when N > 1, (b) was why face boxes appeared
+            # only in snapshots but not on screen — the final push_frame()
+            # call used the last loop iteration's frame which had the boxes
+            # drawn but then immediately overwritten by the next iteration.
+            for (ft, fr, fb, fl, fname) in face_results:
+                is_known_face = fname not in ("UNKNOWN", "")
+                fc = (0, 220, 0) if is_known_face else (0, 0, 220)
+                cv2.rectangle(frame, (fl, ft), (fr, fb), fc, 2)
+                face_label = fname if is_known_face else "Unknown"
+                (tw, th), _ = cv2.getTextSize(
+                    face_label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+                lx, ly = fl, max(ft - 4, th + 4)
+                cv2.rectangle(frame, (lx, ly - th - 3), (lx + tw + 4, ly + 2), fc, -1)
+                cv2.putText(frame, face_label,
+                            (lx + 2, ly),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                            (0, 0, 0), 1, cv2.LINE_AA)
+
             # ── Guard Missing ─────────────────────────────────────────────────
             if post_status == "ABSENT":
                 now = time.time()
                 if now - last_alert_time.get("post_missing", 0) > MISSING_COOLDOWN:
-                    snap_mgr.save(frame, "Guard Missing", last_seen_guard_name, "—")
+                    snap_mgr.save(display_frame, "Guard Missing", last_seen_guard_name, "—")
                     alert_manager.send_alert(
                         "Guard Missing", last_seen_guard_name, zone="—")
                     last_alert_time["post_missing"] = now

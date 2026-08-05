@@ -3,23 +3,20 @@ novisentra/alerting/router.py
 ───────────────────────────────
 AlertRouter — dispatches every alert to all registered backends.
 
-This is the single point that connects the pipeline's alert_queue
-to all delivery channels (email, WhatsApp, webhook, future SMS/Slack/etc.).
+IMPORTANT: The AlertRouter does NOT consume from alert_manager.alert_queue
+directly — that queue is consumed by alert_dispatcher in flask_app.py which
+handles email, WhatsApp, SSE, and the dashboard alert log. Having two
+consumers on the same queue causes a race where each alert is delivered to
+only ONE consumer (whichever calls .get() first), silently dropping alerts
+from the other. Instead, alert_dispatcher feeds a COPY of each alert to
+router.fanout_queue, which the router consumes independently. This ensures
+every alert reaches BOTH the main dispatcher (email/WA/SSE/log) AND the
+router backends (webhooks, future Slack/SMS etc.) with zero interference.
 
-Usage in flask_app.py:
-    from novisentra.alerting.router import AlertRouter
-    from novisentra.alerting.email_backend import EmailAlertBackend
-    from novisentra.alerting.whatsapp_backend import WhatsAppAlertBackend
-    from novisentra.alerting.webhook_backend import WebhookBackend
-
-    router = AlertRouter()
-    router.register(EmailAlertBackend(_email_alerter))
-    router.register(WhatsAppAlertBackend(_whatsapp_alerter))
-    router.register(webhook_backend)   # singleton shared with webhook routes
-    router.start()                     # begins consuming from alert_queue
-
-The router drains src/alerts/alert_manager.alert_queue and fans out
-to every enabled backend. The pipeline itself does not change at all.
+Wiring in flask_app.py alert_dispatcher:
+    # After processing the alert:
+    if _webhook_router:
+        _webhook_router.fanout(alert)
 """
 
 import queue
@@ -40,31 +37,41 @@ from .base import AlertBackend
 
 class AlertRouter:
     """
-    Drains the global alert_queue and fans out to all registered backends.
-
-    Thread-safe. Can register/deregister backends at runtime.
+    Receives alert copies via fanout() and fans out to all registered backends.
+    Does NOT consume from alert_manager.alert_queue — see module docstring.
     """
 
-    def __init__(self, alert_queue: queue.Queue):
-        self._queue    = alert_queue
+    def __init__(self, alert_queue: queue.Queue = None):
+        # alert_queue param kept for backward compat but ignored — we use
+        # our own internal fanout queue to avoid the dual-consumer race.
+        self._fanout_queue = queue.Queue(maxsize=200)
         self._backends: list[AlertBackend] = []
         self._lock     = threading.Lock()
         self._running  = False
         self._thread   = None
 
     def register(self, backend: AlertBackend) -> None:
-        """Add a delivery backend. Can be called before or after start()."""
         with self._lock:
             self._backends.append(backend)
         _log.info(f"Alert backend registered: {type(backend).__name__}")
 
     def deregister(self, backend: AlertBackend) -> None:
-        """Remove a backend."""
         with self._lock:
             self._backends = [b for b in self._backends if b is not backend]
 
+    def fanout(self, alert: dict) -> None:
+        """
+        Called by alert_dispatcher (flask_app.py) after each alert is
+        processed. Puts a copy onto the internal fanout queue so the
+        router thread can deliver it to webhook/other backends without
+        racing with the main dispatcher.
+        """
+        try:
+            self._fanout_queue.put_nowait(dict(alert))
+        except queue.Full:
+            _log.warning("AlertRouter fanout queue full — webhook delivery dropped for one alert.")
+
     def start(self) -> None:
-        """Start the background consumer thread."""
         if self._running:
             return
         self._running = True
@@ -79,12 +86,10 @@ class AlertRouter:
     def stop(self) -> None:
         self._running = False
 
-    # ── Internal ──────────────────────────────────────────────────────────────
-
     def _consume(self):
         while self._running:
             try:
-                alert = self._queue.get(timeout=0.5)
+                alert = self._fanout_queue.get(timeout=0.5)
             except queue.Empty:
                 continue
 
@@ -101,4 +106,4 @@ class AlertRouter:
                         exc_info=True
                     )
 
-            self._queue.task_done()
+            self._fanout_queue.task_done()

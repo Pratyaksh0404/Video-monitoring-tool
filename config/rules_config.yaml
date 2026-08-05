@@ -1,16 +1,16 @@
 # ═══════════════════════════════════════════════════════════════════════════
 # NoviSentra — rules_config.yaml
-# Single global baseline. Scenario-specific behavior (bank/retail/warehouse)
-# comes from novisentra/profiles/ overriding a small subset of these values
-# at runtime per-camera — this file does NOT need duplicating per scenario.
-# See camera_config.yaml for which camera runs which profile.
+# Single global baseline. Scenario-specific behavior (bank/retail/warehouse/
+# restaurant) comes from novisentra/profiles/ overriding a small subset of
+# these values at runtime per-camera — this file does NOT need duplicating
+# per scenario. See camera_config.yaml for which camera runs which profile.
 # ═══════════════════════════════════════════════════════════════════════════
 
 # Fallback profile for single-camera / not-yet-assigned deployments.
 # Multi-camera deployments set this per-camera in camera_config.yaml instead —
 # this value only matters when a camera's config doesn't specify one.
 active_profile: guard_monitoring   # guard_monitoring | bank_security | retail_analytics
-                                    # | warehouse_ops
+                                    # | warehouse_ops | restaurant_billing
 
 # ── Person Detection ──────────────────────────────────────────────
 person:
@@ -166,3 +166,7 @@ whatsapp:
   - Guard Missing
   - Guard Smoking
   - Camera Tamper
+
+pipeline:
+  max_width: 640
+  skip_frames: 2

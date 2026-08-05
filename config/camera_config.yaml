@@ -57,9 +57,21 @@ cameras:
     profile: guard_monitoring   # or whichever profile fits what you're testing
 
   cam_3:
-    name: "Server Room"
-    source: "rtsp://${CAM_3_USER}:${CAM_3_PASS}@192.168.1.101:554/stream1"
-    enabled: false
+    name: "cam3"
+    source: "rtsp://Ip_address:554/user=username&password=password&channel=1&stream=0.sdp"
+    enabled: true
+    profile: guard_monitoring
+
+  cam_4:
+    name: "cam4"
+    source: "rtsp://Ip_address:554/user=username&password=password&channel=2&stream=0.sdp"
+    enabled: true
+    profile: guard_monitoring
+
+  cam_5:
+    name: "cam5"
+    source: "rtsp://Ip_address:554/user=username&password=password&channel=3&stream=0.sdp"
+    enabled: true
     profile: guard_monitoring
 
   # ═══════════════════════════════════════════════════════════════════════
@@ -68,7 +80,7 @@ cameras:
   # ═══════════════════════════════════════════════════════════════════════
   cam_bank_lobby:
     name: "Bank Branch #4 — Lobby"
-    source: "rtsp://${CAM_BANK_LOBBY_USER}:${CAM_BANK_LOBBY_PASS}@192.168.2.10:554/stream1"
+    source: "rtsp://Ip_address:554/user=username&password=password&channel=1&stream=0.sdp"
     enabled: false
     profile: bank_security
     zones:
@@ -81,7 +93,7 @@ cameras:
 
   cam_bank_vault:
     name: "Bank Branch #4 — Vault Approach"
-    source: "rtsp://${CAM_BANK_VAULT_USER}:${CAM_BANK_VAULT_PASS}@192.168.2.11:554/stream1"
+    source: "rtsp://Ip_address:554/user=username&password=password&channel=2&stream=0.sdp"
     enabled: false
     profile: bank_security
     zones:
@@ -94,7 +106,7 @@ cameras:
   # ═══════════════════════════════════════════════════════════════════════
   cam_retail_floor:
     name: "Retail Store #12 — Main Floor"
-    source: "rtsp://${CAM_RETAIL_FLOOR_USER}:${CAM_RETAIL_FLOOR_PASS}@192.168.3.10:554/stream1"
+    source: "rtsp://Ip_address:554/user=username&password=password&channel=1&stream=0.sdp"
     enabled: false
     profile: retail_analytics
     zones:
@@ -116,7 +128,7 @@ cameras:
 
   cam_retail_entrance:
     name: "Retail Store #12 — Front Door"
-    source: "rtsp://${CAM_RETAIL_ENTRANCE_USER}:${CAM_RETAIL_ENTRANCE_PASS}@192.168.3.11:554/stream1"
+    source: "rtsp://Ip_address:554/user=username&password=password&channel=2&stream=0.sdp"
     enabled: false
     profile: retail_analytics
     zones:
@@ -129,7 +141,7 @@ cameras:
   # ═══════════════════════════════════════════════════════════════════════
   cam_warehouse_dock:
     name: "Warehouse #3 — Loading Bay"
-    source: "rtsp://${CAM_WAREHOUSE_DOCK_USER}:${CAM_WAREHOUSE_DOCK_PASS}@192.168.4.10:554/stream1"
+    source: "rtsp://Ip_address:554/user=username&password=password&channel=1&stream=0.sdp"
     enabled: false
     profile: warehouse_ops
     zones:
@@ -145,7 +157,7 @@ cameras:
 
   cam_warehouse_storage:
     name: "Warehouse #3 — Storage Area A"
-    source: "rtsp://${CAM_WAREHOUSE_STORAGE_USER}:${CAM_WAREHOUSE_STORAGE_PASS}@192.168.4.11:554/stream1"
+    source: "rtsp://Ip_address:554/user=username&password=password&channel=2&stream=0.sdp"
     enabled: false
     profile: warehouse_ops
     zones:

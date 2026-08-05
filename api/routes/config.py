@@ -53,24 +53,12 @@ def _licensed_profile_id():
 
 
 def register(app, existing_config_update_fn, existing_config_read_fn, main_web,
-             camera_manager=None, send_session_report_fn=None):
+             camera_manager=None, email_alerter=None):
     """
     existing_config_update_fn: the flask route handler for /api/config/update
     existing_config_read_fn:   the flask route handler for /api/config
     main_web:                  the main_web module (has reload_config())
     camera_manager:             the CameraManager singleton — needed so a
-    send_session_report_fn:    flask_app.send_session_report — called on a
-                                successful profile switch (background
-                                thread, non-blocking) so the OUTGOING
-                                profile's segment gets its shift-report
-                                email now instead of only at final
-                                process shutdown. Per-profile session LOG
-                                FILES no longer depend on this at all
-                                (2026-07 fix: those write immediately from
-                                alert_manager.send_alert()) — this is only
-                                about the email cadence. If not passed,
-                                falls back to the old behavior (email
-                                only at shutdown), logged clearly.
                                 profile switch actually reaches every
                                 camera, not just a cosmetic label. If not
                                 passed, the endpoint falls back to the
@@ -179,25 +167,12 @@ def register(app, existing_config_update_fn, existing_config_read_fn, main_web,
                 "Check flask_app.py's call to api.routes.config.register()."
             )
 
-        # Close out the OUTGOING profile's segment now, rather than
-        # waiting for final shutdown. Bug found 2026-07: across a real
-        # 4-profile test run, this never fired mid-run at all — only the
-        # final Ctrl+C triggered it — so only one shift-report email ever
-        # went out for the whole run instead of one per profile segment.
-        # Per-profile session LOG FILES don't depend on this (they write
-        # immediately per-alert now), so this is purely about email
-        # cadence; safe to run in the background and not block the
-        # response on it.
-        if send_session_report_fn is not None and cameras_updated:
-            import threading
-            threading.Thread(target=send_session_report_fn, daemon=True).start()
-        elif send_session_report_fn is None:
-            import logging
-            logging.getLogger("NoviSentra.flask_app").warning(
-                "POST /api/v1/config/profile: send_session_report_fn not "
-                "wired in — shift-report emails will only be sent at final "
-                "process shutdown, not per profile switch."
-            )
+        # Reset email cooldowns on profile switch so each profile gets a
+        # fresh 60s window. Without this, a Camera Tamper in guard_monitoring
+        # blocks the same alert from emailing for 200s in bank_security even
+        # though it's a completely different operational context.
+        if email_alerter is not None and hasattr(email_alerter, "reset_cooldowns"):
+            email_alerter.reset_cooldowns()
 
         return jsonify({
             "ok": True,

@@ -237,17 +237,6 @@ class CameraInstance:
 
         source_label = self.name
 
-        # Bounded reconnect-with-backoff for webcam (integer) sources.
-        # Previously ANY failure here — including the dual-camera open
-        # hang this was written to fix — permanently killed the camera's
-        # thread for the rest of the process's life (the "else: stream
-        # ended; break" branch below). Converting the hang into a clean
-        # RuntimeError (see src/video/stream_reader.py) only helps if the
-        # camera then gets another chance instead of staying dark.
-        RECONNECT_DELAY_SEC      = 5
-        MAX_CONSECUTIVE_FAILURES = 20   # ~100s of retrying before giving up
-        consecutive_failures     = 0
-
         while not self._stop_event.is_set():
             # Re-assert context at the top of every loop — picks up any
             # rename()/set_profile() call made mid-run on the NEXT iteration.
@@ -255,7 +244,6 @@ class CameraInstance:
                                has_named_zones=bool(self.zones))
             set_profile_context(self.profile_id)
 
-            _run_started = time.time()
             main_web.run(
                 source=self.source,
                 source_label=source_label,
@@ -267,42 +255,12 @@ class CameraInstance:
                 cam_streamer=self.streamer,
                 zones=self.zones,   # named zones for this camera, if calibrated
             )
-            _ran_for = time.time() - _run_started
             if self._stop_event.is_set():
                 break
 
-            from video.stream_reader import is_stream_url
-            _is_rtsp = isinstance(self.source, str) and is_stream_url(self.source)
-
-            if isinstance(self.source, str) and self.loop and not _is_rtsp:
+            if isinstance(self.source, str) and self.loop:
                 print(f"[CameraManager] {self.cam_id} — looping video: {self.source}")
                 time.sleep(1)
-                consecutive_failures = 0
-            elif isinstance(self.source, int) or _is_rtsp:
-                # Reconnect-with-backoff for BOTH webcam (int) sources and
-                # RTSP/DVR (str URL) sources — a dropped DVR channel is
-                # the expected, routine failure mode for a real
-                # multi-camera deployment (see stream_reader.py's inner
-                # reconnect logic, which handles most blips without ever
-                # reaching here; this outer retry is for when the DVR
-                # itself is down long enough to exhaust that inner budget).
-                #
-                # A run that actually streamed for a while before dropping
-                # (e.g. a genuine hardware/network hiccup after hours of
-                # uptime) isn't the same failure mode as an instant open
-                # failure — don't let it eat into the same short retry budget.
-                if _ran_for >= 30:
-                    consecutive_failures = 0
-                consecutive_failures += 1
-                if consecutive_failures > MAX_CONSECUTIVE_FAILURES:
-                    print(f"[CameraManager] {self.cam_id} — giving up after "
-                          f"{consecutive_failures} consecutive failures. "
-                          f"Camera will stay offline until manually restarted.")
-                    break
-                print(f"[CameraManager] {self.cam_id} — stream stopped, "
-                      f"reconnecting in {RECONNECT_DELAY_SEC}s "
-                      f"(attempt {consecutive_failures}/{MAX_CONSECUTIVE_FAILURES})...")
-                time.sleep(RECONNECT_DELAY_SEC)
             else:
                 print(f"[CameraManager] {self.cam_id} — stream ended.")
                 break
@@ -367,9 +325,20 @@ class CameraManager:
         return self._config.get("default_camera", "cam_1")
 
     def start_all(self):
-        for cam_id, cam in self.cameras.items():
-            if cam.enabled:
-                cam.start()
+        """Start all enabled cameras with a small stagger between each.
+
+        Starting 3-4 cameras simultaneously (especially a mix of webcam
+        index sources and RTSP URLs) causes multiple threads to compete
+        for FFMPEG/DirectShow initialization at exactly the same time,
+        which amplifies GIL contention and can freeze the process on
+        startup. A 1.5s stagger between each camera is imperceptible to
+        the user (~6s total for 4 cameras) but eliminates the contention.
+        """
+        enabled = [cam for cam in self.cameras.values() if cam.enabled]
+        for i, cam in enumerate(enabled):
+            cam.start()
+            if i < len(enabled) - 1:   # no sleep after the last one
+                time.sleep(1.5)
 
     def stop_all(self):
         for cam in self.cameras.values():

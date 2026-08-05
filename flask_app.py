@@ -105,21 +105,7 @@ _sse_subscribers= []
 _sse_lock       = threading.Lock()
 _acknowledged_alerts = set()
 _ack_lock            = threading.Lock()
-
-# Bug found 2026-07 ("profile history wiped on switch"): send_session_report()
-# used to capture-and-CLEAR _alert_log to build each shift-report email — which
-# meant every profile switch (now correctly triggering a report per switch,
-# see api/routes/config.py) also wiped the dashboard's live alert history for
-# that camera. Switching guard_monitoring -> bank_security -> guard_monitoring
-# again showed an EMPTY history for guard_monitoring's second stint instead of
-# appending to what was there before, even though the per-profile session LOG
-# FILE on disk was fine (that part writes immediately elsewhere and was never
-# affected). Fix: _alert_log is now purely additive for the life of the
-# process (dashboard/API/SSE-history source of truth, capped at 500 most
-# recent same as before) and is NEVER cleared by the report mechanism. A
-# separate, smaller buffer holds "alerts since the last report" for email
-# purposes only.
-_pending_report_alerts = []
+_webhook_router = None   # set by _register_v1_api(); used by alert_dispatcher
 
 
 def allowed_file(fn):
@@ -142,71 +128,57 @@ def alert_dispatcher():
         alert["id"]           = str(uuid.uuid4())[:8]
         alert["acknowledged"] = False
 
-        # Defensive hardening (2026-07): this whole block used to run with
-        # no try/except. Any single exception here — a bad email/WhatsApp
-        # send, anything — would silently kill this ENTIRE background
-        # thread forever (daemon thread, no supervisor/restart), after
-        # which every subsequent alert would still log to system.log (a
-        # separate code path) but would never reach email, WhatsApp, the
-        # live dashboard SSE feed, or _alert_log again for the rest of the
-        # process's life, with no error printed anywhere. Per-profile
-        # session log files are unaffected either way now (they write
-        # directly from alert_manager.send_alert(), not through this
-        # queue) but email/WhatsApp/dashboard-live-view/_alert_log all
-        # still depend on this loop staying alive.
-        try:
-            # Email ALL alerts except Guard Idle and Patrol
-            # (should_send in EmailAlerter handles the filtering)
-            _email_alerter.send(alert)
+        # Email ALL alerts except Guard Idle and Patrol
+        # (should_send in EmailAlerter handles the filtering)
+        _email_alerter.send(alert)
 
-            # WhatsApp batches HIGH severity alerts
-            if alert.get("severity") == "high":
-                _whatsapp_alerter.send(alert)
+        # WhatsApp batches HIGH severity alerts
+        if alert.get("severity") == "high":
+            _whatsapp_alerter.send(alert)
 
-            daily_count += 1
-            streamer.update_stats(alerts_today=daily_count)
+        # Fanout to webhook/other backends via AlertRouter.
+        # Must be called AFTER email/WA so alert already has id/acknowledged.
+        # Uses a separate internal queue inside the router — does NOT race
+        # with this dispatcher for the main alert_queue (that was the bug
+        # that caused ~25% of alerts to be silently dropped: two threads
+        # both calling .get() on the same queue).
+        if _webhook_router is not None:
+            _webhook_router.fanout(alert)
 
-            with _alert_log_lock:
-                _alert_log.append(alert)
-                if len(_alert_log) > 500:
-                    _alert_log.pop(0)
-                # Persistent (_alert_log, above) vs report-batch (below) are
-                # deliberately separate lists now — see the module-level
-                # comment on _pending_report_alerts for why.
-                _pending_report_alerts.append(alert)
+        daily_count += 1
+        streamer.update_stats(alerts_today=daily_count)
 
-            payload = f"data: {json.dumps(alert)}\n\n"
-            alert_camera  = alert.get("camera_id")
-            alert_profile = alert.get("profile_id")
-            with _sse_lock:
-                dead = []
-                for entry in _sse_subscribers:
-                    q         = entry["queue"]
-                    cam_filter = entry["camera_id"]
-                    prof_filter = entry.get("profile_id")
-                    # No camera filter = receive everything (external/API
-                    # firehose connections). A camera-scoped connection also
-                    # only gets alerts matching the profile that camera had
-                    # WHEN THE CONNECTION OPENED — this is what makes
-                    # switching profiles on the same camera correctly stop
-                    # showing that camera's older-profile alerts, live, not
-                    # just after a fresh reconnect.
-                    if cam_filter is not None and alert_camera != cam_filter:
-                        continue
-                    if prof_filter is not None and alert_profile != prof_filter:
-                        continue
-                    try:
-                        q.put_nowait(payload)
-                    except queue.Full:
-                        dead.append(q)
-                for q in dead:
-                    _sse_subscribers[:] = [e for e in _sse_subscribers if e["queue"] is not q]
-        except Exception as e:
-            print(f"[alert_dispatcher] \u2717 Unhandled error processing alert "
-                  f"{alert.get('type', '?')!r}: {type(e).__name__}: {e} \u2014 "
-                  f"continuing (this alert may not have reached email/WhatsApp/"
-                  f"dashboard, but the dispatcher thread is still alive for "
-                  f"the next one).")
+        with _alert_log_lock:
+            _alert_log.append(alert)
+            if len(_alert_log) > 500:
+                _alert_log.pop(0)
+
+        payload = f"data: {json.dumps(alert)}\n\n"
+        alert_camera  = alert.get("camera_id")
+        alert_profile = alert.get("profile_id")
+        with _sse_lock:
+            dead = []
+            for entry in _sse_subscribers:
+                q         = entry["queue"]
+                cam_filter = entry["camera_id"]
+                prof_filter = entry.get("profile_id")
+                # No camera filter = receive everything (external/API
+                # firehose connections). A camera-scoped connection also
+                # only gets alerts matching the profile that camera had
+                # WHEN THE CONNECTION OPENED — this is what makes
+                # switching profiles on the same camera correctly stop
+                # showing that camera's older-profile alerts, live, not
+                # just after a fresh reconnect.
+                if cam_filter is not None and alert_camera != cam_filter:
+                    continue
+                if prof_filter is not None and alert_profile != prof_filter:
+                    continue
+                try:
+                    q.put_nowait(payload)
+                except queue.Full:
+                    dead.append(q)
+            for q in dead:
+                _sse_subscribers[:] = [e for e in _sse_subscribers if e["queue"] is not q]
 
 
 # Guards against send_session_report being triggered concurrently
@@ -234,14 +206,24 @@ def send_session_report():
         return
 
     try:
-        # Capture AND clear the PENDING-REPORT buffer (not _alert_log —
-        # that one is the persistent dashboard/API history and must never
-        # be wiped by a report/profile-switch; see its module-level
-        # comment). Atomic under the same lock so a second call that
-        # somehow slips through always sees an empty pending list.
+        # Capture AND clear the alert log atomically so a second call that
+        # somehow slips through always sees an empty list.
         with _alert_log_lock:
-            alerts = list(_pending_report_alerts)
-            _pending_report_alerts.clear()
+            alerts = list(_alert_log)
+            _alert_log.clear()
+
+        # Write to each profile's own session log file, regardless of
+        # whether this batch is big enough to also trigger an email below
+        # — the per-profile log should capture everything, even a short
+        # segment; only the EMAIL send has a minimum-size threshold.
+        try:
+            from utils.logger import save_profile_alert_log
+            written = save_profile_alert_log(alerts)
+            if written:
+                log.info(f"Per-profile session log(s) updated: "
+                        f"{', '.join(f'{p} ({os.path.basename(f)})' for p, f in written.items())}")
+        except Exception as e:
+            log.warning(f"Could not write per-profile session log: {e}")
 
         # Skip if there's nothing new to report (e.g. Ctrl+C fired shortly
         # after a manual "Send Report" from the dashboard already cleared the
@@ -898,13 +880,15 @@ def _register_v1_api():
         )
 
         # ── Alert router — fans out alert_queue to all backends ───────────────
-        # NOTE: The existing code in this file already calls
-        # _email_alerter.send() and _whatsapp_alerter.send() directly from
-        # the alert_queue consumer thread. The router is additive — it reads
-        # the same queue and adds webhook delivery without touching existing paths.
+        # NOTE: router now uses its own internal fanout queue (not alert_queue
+        # directly) to avoid racing with alert_dispatcher. alert_dispatcher
+        # calls router.fanout(alert) after each alert is processed.
         router = AlertRouter(alert_queue)
-        router.register(webhook_backend)   # email/WA already handled by existing code
+        router.register(webhook_backend)
         router.start()
+
+        global _webhook_router
+        _webhook_router = router
 
         # ── Pipeline state (shared with health endpoint) ──────────────────────
         pipeline_state = {
@@ -968,7 +952,7 @@ def _register_v1_api():
         _r_webhooks.register(app, webhook_backend)
         _r_analytics.register(app, streamer, _snap_mgr, _alert_log, _alert_log_lock)
         _r_config.register(app, api_config_update, api_config, main_web, _cam_manager,
-                           send_session_report_fn=send_session_report)
+                           email_alerter=_email_alerter)
         _r_reports.register(app, send_session_report, generate_report,
                             streamer, _alert_log, _alert_log_lock,
                             get_session_start_fn=_get_session_start,
@@ -1070,6 +1054,33 @@ if __name__ == "__main__":
     atexit.register(_on_exit_guarded)
 
     threading.Thread(target=alert_dispatcher, daemon=True).start()
+
+    # Pre-warm CLIP synchronously before starting any camera.
+    # This means camera threads call get_shared_clip() and get an instant
+    # cache hit — no model loading happens on the camera thread at all.
+    # This avoids all previous multi-camera CLIP loading race conditions.
+    print("[Startup] Pre-loading CLIP model (runs once)...")
+    try:
+        from analytics.behavior_classifier import get_shared_clip
+        get_shared_clip()
+        print("[Startup] CLIP ready.")
+    except Exception as e:
+        print(f"[Startup] CLIP pre-load failed (behavior detection disabled): {e}")
+
+    # Pre-load face encodings synchronously. This is the main startup
+    # bottleneck — 39 images × dlib encoding = ~5 min on CPU per camera
+    # if not cached. After first run, the cache is read in <1s.
+    print("[Startup] Pre-loading face encodings...")
+    try:
+        import os as _os
+        _faces_dir = _os.path.join(
+            _os.path.dirname(_os.path.abspath(__file__)),
+            "src", "data", "enrolled_faces"
+        )
+        main_web.load_enrolled_faces(_faces_dir)
+        print("[Startup] Face encodings ready.")
+    except Exception as e:
+        print(f"[Startup] Face encoding pre-load failed: {e}")
 
     if _cam_manager.is_multi_camera:
         _cam_manager.start_all()
