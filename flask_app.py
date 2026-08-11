@@ -49,6 +49,10 @@ if os.path.exists(_rules_config_path):
 from email_alerter import EmailAlerter
 _email_alerter = EmailAlerter(_rules_config.get("email", {}))
 
+# Telegram alerter
+from telegram_alerter import TelegramAlerter
+_telegram_alerter = TelegramAlerter(_rules_config.get("telegram", {}))
+
 # WhatsApp alerter
 from whatsapp_alerter import WhatsAppAlerter
 _whatsapp_alerter = WhatsAppAlerter(_rules_config.get("whatsapp", {}))
@@ -135,6 +139,7 @@ def alert_dispatcher():
         # WhatsApp batches HIGH severity alerts
         if alert.get("severity") == "high":
             _whatsapp_alerter.send(alert)
+            _telegram_alerter.send(alert)  # add this line
 
         # Fanout to webhook/other backends via AlertRouter.
         # Must be called AFTER email/WA so alert already has id/acknowledged.

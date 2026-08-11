@@ -167,6 +167,18 @@ whatsapp:
   - Guard Smoking
   - Camera Tamper
 
+telegram:
+  enabled: true
+  alert_types:
+    - Weapon Detected
+    - Unattended Weapon Detected
+    - Fire Detected
+    - Fight / Violence Detected
+    - Guard Under Attack
+    - Guard Sleeping
+    - Guard Missing
+    - Camera Tamper
+
 pipeline:
   max_width: 640
   skip_frames: 2
