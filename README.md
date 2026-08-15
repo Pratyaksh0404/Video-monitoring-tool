@@ -2,7 +2,7 @@
 
 > Real-time threat detection, behavioral analysis, and automated alerting for existing CCTV infrastructure.
 
-NoviSentra connects to your IP cameras or DVR/NVR hardware via RTSP, runs multiple AI models simultaneously on every frame, and delivers alerts with photo evidence to your team via email and WhatsApp — all on your own hardware, with no video sent to any external service.
+NoviSentra connects to your IP cameras or DVR/NVR hardware via RTSP, runs multiple AI models simultaneously on every frame, and delivers alerts with photo evidence to your team via email and Telegram — all on your own hardware, with no video sent to any external service.
 
 ---
 
@@ -179,9 +179,9 @@ Every detected event appears in the live alert log with:
 - Per-type cooldown (default 200s) prevents flooding
 - Unknown Person alerts suppressed by default
 
-### WhatsApp (via Twilio)
-- Sends for HIGH severity alerts only
-- Configure Twilio credentials in environment variables
+### Telegram 
+- Sends for HIGH severity alerts 
+- Configure Telegram credentials in environment variables
 
 ### Shift Reports
 - Auto-sent on profile switch and system shutdown
